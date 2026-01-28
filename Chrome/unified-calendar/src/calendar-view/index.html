@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Unified Calendar</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8f9fa;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: white;
+      border-bottom: 1px solid #e8eaed;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header h1 {
+      font-size: 22px;
+      font-weight: 400;
+      color: #202124;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: #4285f4;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #3367d6;
+    }
+
+    /* Progress Banner */
+    .progress-banner {
+      background: linear-gradient(90deg, #e8f0fe 0%, #d2e3fc 100%);
+      padding: 12px 24px;
+      display: none;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid #c2d7f8;
+    }
+
+    .progress-banner.active {
+      display: flex;
+    }
+
+    .progress-spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #c2d7f8;
+      border-top-color: #4285f4;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .progress-info {
+      flex: 1;
+    }
+
+    .progress-text {
+      font-size: 14px;
+      color: #1967d2;
+      font-weight: 500;
+    }
+
+    .progress-detail {
+      font-size: 12px;
+      color: #5f6368;
+    }
+
+    .progress-bar-container {
+      width: 200px;
+      height: 4px;
+      background: #c2d7f8;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #4285f4;
+      transition: width 0.3s ease;
+    }
+
+    /* Calendar Grid */
+    .calendar-container {
+      padding: 24px;
+    }
+
+    .week-header {
+      display: grid;
+      grid-template-columns: 60px repeat(7, 1fr);
+      background: white;
+      border-radius: 8px 8px 0 0;
+      border: 1px solid #e8eaed;
+      border-bottom: none;
+    }
+
+    .week-header-cell {
+      padding: 12px 8px;
+      text-align: center;
+      font-size: 12px;
+      color: #5f6368;
+      border-left: 1px solid #e8eaed;
+    }
+
+    .week-header-cell:first-child {
+      border-left: none;
+    }
+
+    .week-header-cell .day-name {
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .week-header-cell .day-number {
+      font-size: 24px;
+      color: #202124;
+      margin-top: 4px;
+    }
+
+    .week-header-cell.today .day-number {
+      background: #4285f4;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .week-grid {
+      display: grid;
+      grid-template-columns: 60px repeat(7, 1fr);
+      background: white;
+      border: 1px solid #e8eaed;
+      border-radius: 0 0 8px 8px;
+    }
+
+    .time-column {
+      border-right: 1px solid #e8eaed;
+    }
+
+    .time-slot {
+      height: 48px;
+      padding: 4px 8px;
+      font-size: 10px;
+      color: #5f6368;
+      text-align: right;
+      border-bottom: 1px solid #f1f3f4;
+    }
+
+    .day-column {
+      position: relative;
+      border-left: 1px solid #e8eaed;
+      min-height: calc(48px * 24);
+    }
+
+    .day-column:first-of-type {
+      border-left: none;
+    }
+
+    .hour-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: #f1f3f4;
+    }
+
+    /* Calendar Entries */
+    .calendar-entry {
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      z-index: 1;
+    }
+
+    .calendar-entry:hover {
+      transform: scale(1.02);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      z-index: 10;
+    }
+
+    .calendar-entry.confirmed {
+      border-left: 3px solid;
+    }
+
+    .calendar-entry.tentative {
+      border-left: 3px dashed;
+      opacity: 0.8;
+      background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 5px,
+        rgba(255,255,255,0.1) 5px,
+        rgba(255,255,255,0.1) 10px
+      );
+    }
+
+    .calendar-entry.conflict {
+      box-shadow: 0 0 0 2px #ea4335;
+    }
+
+    .entry-title {
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .entry-time {
+      font-size: 10px;
+      opacity: 0.8;
+    }
+
+    .entry-source {
+      font-size: 9px;
+      opacity: 0.7;
+      margin-top: 2px;
+    }
+
+    /* New entry animation */
+    @keyframes entryAppear {
+      0% {
+        opacity: 0;
+        transform: scale(0.8) translateY(-10px);
+      }
+      50% {
+        transform: scale(1.05);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+      }
+    }
+
+    .calendar-entry.new {
+      animation: entryAppear 0.5s ease-out;
+    }
+
+    .calendar-entry.new::after {
+      content: 'NEW';
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      background: #fbbc04;
+      color: #202124;
+      font-size: 8px;
+      padding: 1px 4px;
+      border-radius: 2px;
+      font-weight: 600;
+    }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      gap: 24px;
+      padding: 16px 24px;
+      background: white;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      border: 1px solid #e8eaed;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #5f6368;
+    }
+
+    .legend-color {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+    }
+
+    .legend-color.tentative {
+      background-image: repeating-linear-gradient(
+        45deg,
+        #ccc,
+        #ccc 2px,
+        #eee 2px,
+        #eee 4px
+      );
+    }
+
+    /* Entry Detail Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      max-width: 400px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal h2 {
+      font-size: 18px;
+      margin-bottom: 16px;
+    }
+
+    .modal-row {
+      margin-bottom: 12px;
+    }
+
+    .modal-label {
+      font-size: 12px;
+      color: #5f6368;
+      margin-bottom: 4px;
+    }
+
+    .modal-value {
+      font-size: 14px;
+    }
+
+    .modal-close {
+      margin-top: 16px;
+    }
+
+    /* Stats */
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .stat-card {
+      background: white;
+      border: 1px solid #e8eaed;
+      border-radius: 8px;
+      padding: 16px;
+      flex: 1;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 300;
+      color: #202124;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #5f6368;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>
+      <span>📅</span>
+      Unified Calendar
+    </h1>
+    <div class="header-actions">
+      <button id="btn-refresh" class="btn btn-primary">
+        <span>🔄</span> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div id="progress-banner" class="progress-banner">
+    <div class="progress-spinner"></div>
+    <div class="progress-info">
+      <div id="progress-text" class="progress-text">Scanning...</div>
+      <div id="progress-detail" class="progress-detail">Initializing...</div>
+    </div>
+    <div class="progress-bar-container">
+      <div id="progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+    </div>
+  </div>
+
+  <div class="calendar-container">
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div id="stat-confirmed" class="stat-value">0</div>
+        <div class="stat-label">Confirmed Events</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-tentative" class="stat-value">0</div>
+        <div class="stat-label">Tentative Meetings</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-conflicts" class="stat-value">0</div>
+        <div class="stat-label">Conflicts</div>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div id="legend" class="legend">
+      <!-- Populated dynamically -->
+    </div>
+
+    <!-- Calendar -->
+    <div class="week-header" id="week-header">
+      <div class="week-header-cell"></div>
+      <!-- Days populated dynamically -->
+    </div>
+
+    <div class="week-grid" id="week-grid">
+      <div class="time-column" id="time-column">
+        <!-- Times populated dynamically -->
+      </div>
+      <!-- Day columns populated dynamically -->
+    </div>
+  </div>
+
+  <!-- Entry Detail Modal -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal">
+      <h2 id="modal-title">Event Details</h2>
+      <div id="modal-content"></div>
+      <button id="modal-close" class="btn btn-primary modal-close">Close</button>
+    </div>
+  </div>
+
+  <script src="calendar.js"></script>
+</body>
+</html>
