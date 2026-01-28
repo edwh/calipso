@@ -364,23 +364,15 @@ async function scanEmails(mailbox, lookbackDays) {
         currentScan.progress.currentItem = email.subject;
         broadcastScanStatus();
 
-        // For now, we'll do basic keyword detection
-        // Full WebLLM analysis would happen here
-        const meetingKeywords = ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment'];
+        // Use keyword matching to detect meeting-related emails
+        const meetingKeywords = ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
         const hasKeyword = meetingKeywords.some(kw =>
           email.subject.toLowerCase().includes(kw) ||
           email.snippet.toLowerCase().includes(kw)
         );
 
         if (hasKeyword) {
-          // Use the email's parsed date, not current time
-          // Note: The actual meeting time would be extracted by the LLM
-          // For now, we use the email date as a placeholder
           const emailDate = email.parsedDate ? new Date(email.parsedDate) : new Date();
-
-          // For tentative entries, we're noting that this email DISCUSSES a meeting
-          // The actual meeting time will be extracted by the LLM later
-          // For now, set it to the email date (this is a placeholder)
           const startTime = new Date(emailDate);
           const endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
 

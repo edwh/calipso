@@ -50,8 +50,5 @@
     "32": "public/icons/icon32.png",
     "48": "public/icons/icon48.png",
     "128": "public/icons/icon128.png"
-  },
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 }
