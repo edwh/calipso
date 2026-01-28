@@ -412,8 +412,12 @@
       <span class="setting-label">Lookback period (days)</span>
       <input id="lookback-days" type="number" class="setting-input" value="14" min="1" max="90">
     </div>
-    <div style="font-size:11px;color:#5f6368;margin-top:8px">
-      Meeting detection uses keyword matching. Calendar events are scraped directly from Google Calendar.
+    <div class="setting-row">
+      <span class="setting-label">AI Meeting Detection</span>
+      <button id="btn-init-llm" class="btn btn-secondary" style="padding:4px 12px;font-size:12px;width:auto">Load Model</button>
+    </div>
+    <div id="llm-status" style="font-size:11px;color:#5f6368;margin-top:4px">
+      Load the AI model for smarter meeting detection from emails.
     </div>
   </div>
 

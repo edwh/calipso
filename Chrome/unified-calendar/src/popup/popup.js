@@ -16,6 +16,10 @@ const btnPause = document.getElementById('btn-pause');
 const btnCancel = document.getElementById('btn-cancel');
 const lookbackDays = document.getElementById('lookback-days');
 
+// LLM elements
+const btnInitLlm = document.getElementById('btn-init-llm');
+const llmStatus = document.getElementById('llm-status');
+
 // Add mailbox form elements
 const addMailboxForm = document.getElementById('add-mailbox-form');
 const mailboxEmailInput = document.getElementById('mailbox-email');
@@ -34,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadMailboxes();
   await checkScanStatus();
   await checkCurrentTab();
+  await checkLlmStatus();
 });
 
 // Load and display mailboxes
@@ -324,10 +329,52 @@ btnCancel.addEventListener('click', async () => {
   showStatus('Scan cancelled', 'success');
 });
 
+// LLM initialization handler
+btnInitLlm.addEventListener('click', async () => {
+  btnInitLlm.disabled = true;
+  btnInitLlm.innerHTML = '<span class="spinner"></span>';
+  llmStatus.textContent = 'Initializing AI model...';
+
+  const result = await chrome.runtime.sendMessage({ type: 'INIT_LLM' });
+
+  if (result?.error) {
+    llmStatus.textContent = `Error: ${result.error}`;
+    llmStatus.style.color = '#ea4335';
+    btnInitLlm.disabled = false;
+    btnInitLlm.textContent = 'Retry';
+  } else if (result?.ready) {
+    llmStatus.textContent = 'AI model ready! Scans will now use smart meeting detection.';
+    llmStatus.style.color = '#34a853';
+    btnInitLlm.textContent = 'Loaded ✓';
+  }
+});
+
+// Check LLM status on load
+async function checkLlmStatus() {
+  const status = await chrome.runtime.sendMessage({ type: 'GET_LLM_STATUS' });
+  if (status?.ready) {
+    llmStatus.textContent = 'AI model ready!';
+    llmStatus.style.color = '#34a853';
+    btnInitLlm.textContent = 'Loaded ✓';
+    btnInitLlm.disabled = true;
+  } else if (status?.loading) {
+    llmStatus.textContent = `Loading AI model... ${status.progress || ''}`;
+    btnInitLlm.disabled = true;
+    btnInitLlm.innerHTML = '<span class="spinner"></span>';
+  }
+}
+
 // Listen for status updates
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'SCAN_STATUS_UPDATE') {
     updateScanUI(message.status);
+  }
+
+  if (message.type === 'LLM_INIT_PROGRESS') {
+    llmStatus.textContent = message.text || 'Loading AI model...';
+    if (message.progress !== undefined) {
+      llmStatus.textContent += ` (${Math.round(message.progress * 100)}%)`;
+    }
   }
 });
 
