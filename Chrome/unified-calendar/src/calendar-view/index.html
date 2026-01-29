@@ -505,6 +505,15 @@
       flex: 1;
     }
 
+    .stat-card.clickable {
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .stat-card.clickable:hover {
+      background: #f8f9fa;
+    }
+
     .stat-value {
       font-size: 32px;
       font-weight: 300;
@@ -548,7 +557,7 @@
         <div id="stat-confirmed" class="stat-value">0</div>
         <div class="stat-label">Confirmed Events</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card clickable">
         <div id="stat-tentative" class="stat-value">0</div>
         <div class="stat-label">Tentative Meetings</div>
       </div>

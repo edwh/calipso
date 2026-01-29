@@ -482,6 +482,34 @@ function showEntryDetails(entry) {
         <div class="modal-value">${entry.source.emailDate || 'Unknown'}</div>
       </div>
     `;
+
+    // Add snippet if available
+    if (entry.source.emailSnippet) {
+      content += `
+        <div class="modal-row">
+          <div class="modal-label">Snippet</div>
+          <div class="modal-value" style="font-style: italic; color: #5f6368;">"${escapeHtml(entry.source.emailSnippet)}"</div>
+        </div>
+      `;
+    }
+
+    // Add link to open email in Gmail
+    if (mailbox && entry.source.emailThreadId) {
+      const accountIndex = mailbox.accountIndex || 0;
+      const threadId = entry.source.emailThreadId;
+      // Gmail URL format: https://mail.google.com/mail/u/{accountIndex}/#inbox/{threadId}
+      const gmailUrl = `https://mail.google.com/mail/u/${accountIndex}/#all/${threadId}`;
+      content += `
+        <div class="modal-row">
+          <div class="modal-label">Open Email</div>
+          <div class="modal-value">
+            <a href="${gmailUrl}" target="_blank" rel="noopener" style="color: #1a73e8; text-decoration: none;">
+              View in Gmail →
+            </a>
+          </div>
+        </div>
+      `;
+    }
   }
 
   if (entry.conflicts?.length > 0) {
@@ -560,6 +588,57 @@ modalOverlay.addEventListener('click', (e) => {
     modalOverlay.classList.remove('active');
   }
 });
+
+// Click on Tentative Meetings stat to show all tentative entries
+document.getElementById('stat-tentative').closest('.stat-card').addEventListener('click', () => {
+  showTentativeMeetings();
+});
+
+function showTentativeMeetings() {
+  const tentative = entries.filter(e => e.status === 'tentative');
+
+  modalTitle.textContent = `Tentative Meetings (${tentative.length})`;
+
+  if (tentative.length === 0) {
+    modalContent.innerHTML = '<p>No tentative meetings found.</p>';
+  } else {
+    // Sort by start time
+    tentative.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+    let content = '<div class="day-clash-view">';
+
+    for (const entry of tentative) {
+      const mailbox = mailboxes.find(m => m.id === entry.mailboxId);
+      const startDate = new Date(entry.startTime);
+      const dateStr = startDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      const timeStr = formatTime(startDate);
+
+      content += `
+        <div class="clash-event" style="border-left: 4px solid ${mailbox?.color || '#4285f4'}; cursor: pointer; margin-bottom: 8px;" data-entry-id="${entry.id}">
+          <div class="clash-event-time">${dateStr} at ${timeStr}</div>
+          <div class="clash-event-title">${escapeHtml(entry.title)}</div>
+          <div class="clash-event-source">${escapeHtml(entry.source?.emailSubject || 'From email')}</div>
+        </div>
+      `;
+    }
+
+    content += '</div>';
+    modalContent.innerHTML = content;
+
+    // Add click handlers to each entry
+    modalContent.querySelectorAll('.clash-event').forEach(el => {
+      el.addEventListener('click', () => {
+        const entryId = el.dataset.entryId;
+        const entry = entries.find(e => e.id === entryId);
+        if (entry) {
+          showEntryDetails(entry);
+        }
+      });
+    });
+  }
+
+  modalOverlay.classList.add('active');
+}
 
 // Refresh button - triggers a full scan
 document.getElementById('btn-refresh').addEventListener('click', async () => {

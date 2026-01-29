@@ -857,8 +857,30 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
           }
         }
 
-        // Keyword fallback when LLM is not available or didn't find a meeting
-        if (!meetingInfo) {
+        // Skip obvious newsletters/marketing emails
+        const fromLower = (email.from || '').toLowerCase();
+        const isNewsletter = fromLower.includes('noreply') ||
+                            fromLower.includes('no-reply') ||
+                            fromLower.includes('newsletter') ||
+                            fromLower.includes('marketing') ||
+                            fromLower.includes('info@') ||
+                            fromLower.includes('hello@') ||
+                            fromLower.includes('news@') ||
+                            fromLower.includes('updates@') ||
+                            fromLower.includes('notifications') ||
+                            fromLower.includes('@email.') ||
+                            fromLower.includes('@mail.') ||
+                            fromLower.includes('@e.') ||
+                            fromLower.includes('freegle') ||
+                            fromLower.includes('linkedin') ||
+                            fromLower.includes('.com') && !fromLower.includes('gmail.com') && !fromLower.includes('outlook.com');
+
+        if (isNewsletter) {
+          meetingInfo = null; // Skip newsletters
+        }
+
+        // Keyword fallback ONLY when LLM is not available (too many false positives otherwise)
+        if (!meetingInfo && !llmReady) {
           const stored = await chrome.storage.local.get('meetingKeywords');
           const meetingKeywords = stored.meetingKeywords || ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
           const hasKeyword = meetingKeywords.some((kw: string) =>
@@ -896,42 +918,48 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
           }
         }
 
-        if (meetingInfo?.isMeeting) {
-          const emailDate = email.parsedDate ? new Date(email.parsedDate) : new Date();
-
+        // Only create entry if we have a valid date extracted
+        if (meetingInfo?.isMeeting && meetingInfo.date) {
           let startTime: Date, endTime: Date;
           let isAllDay = false;
 
-          if (meetingInfo.date && meetingInfo.time) {
-            // LLM extracted specific date/time
+          if (meetingInfo.time) {
+            // LLM extracted specific date/time - validate time is reasonable (multiple of 5)
             const [year, month, day] = meetingInfo.date.split('-').map(Number);
             const [hour, minute] = meetingInfo.time.split(':').map(Number);
+            if (minute % 5 !== 0) {
+              // Suspicious time - likely hallucinated, reject the entire entry
+              console.log('Rejecting entry with non-5-minute time:', meetingInfo.time, 'for:', email.subject);
+              continue;
+            }
             startTime = new Date(year, month - 1, day, hour, minute);
             const duration = meetingInfo.duration || 60;
             endTime = new Date(startTime.getTime() + duration * 60 * 1000);
-          } else if (meetingInfo.date && meetingInfo.endDate && meetingInfo.endDate !== meetingInfo.date) {
+          } else if (meetingInfo.endDate && meetingInfo.endDate !== meetingInfo.date) {
             // Multi-day event
             const [year, month, day] = meetingInfo.date.split('-').map(Number);
             const [endYear, endMonth, endDay] = meetingInfo.endDate.split('-').map(Number);
             startTime = new Date(year, month - 1, day, 0, 0);
             endTime = new Date(endYear, endMonth - 1, endDay, 23, 59);
             isAllDay = true;
-          } else if (meetingInfo.date) {
+          } else {
             // Date extracted but no time - create all-day event
             const [year, month, day] = meetingInfo.date.split('-').map(Number);
             startTime = new Date(year, month - 1, day, 9, 0); // Default to 9 AM
             endTime = new Date(year, month - 1, day, 10, 0);  // 1 hour default
             isAllDay = true;
-          } else {
-            // Fallback: use email date
-            startTime = new Date(emailDate);
-            endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
+          }
+
+          // Skip if title is template text
+          const title = meetingInfo.title || email.subject;
+          if (title.toLowerCase() === 'event title' || title.includes('YYYY')) {
+            continue;
           }
 
           const tentativeEntry = {
             id: `email-${mailbox.id}-${email.id}`,
             mailboxId: mailbox.id,
-            title: meetingInfo.title || email.subject,
+            title: title,
             startTime: startTime.toISOString(),
             endTime: endTime.toISOString(),
             isAllDay: isAllDay,
@@ -939,6 +967,7 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
             source: {
               type: 'email',
               emailSubject: email.subject,
+              emailSnippet: email.snippet?.substring(0, 200) || '',
               emailDate: email.parsedDate || email.dateText,
               emailThreadId: email.id,
               llmAnalysis: llmReady ? meetingInfo : undefined
@@ -1431,16 +1460,31 @@ function scrapeGmailEmailsDirect(lookbackDays: number) {
       const snippetEl = row.querySelector('.y2, .Zs');
       const snippet = snippetEl?.textContent?.trim() || '';
 
+      // Try to extract To/CC from row (Gmail shows this in some views)
+      // Note: Full To/CC requires opening the email, but we can check if "me" indicator is present
+      const toMeIndicator = row.querySelector('.yP')?.textContent?.includes('me') ||
+                           row.querySelector('.zF')?.textContent?.includes('me');
+
       const parsedDate = parseGmailDate(dateText);
       if (!parsedDate || parsedDate < cutoffDate) continue;
 
+      // Generate deterministic ID from email content to avoid duplicates across scans
+      const emailKey = `${subject}-${from}-${dateText}`;
+      let hash = 0;
+      for (let i = 0; i < emailKey.length; i++) {
+        hash = ((hash << 5) - hash) + emailKey.charCodeAt(i);
+        hash = hash & hash;
+      }
+      const emailId = `email-${Math.abs(hash).toString(36)}`;
+
       emails.push({
-        id: `direct-${Date.now()}-${Math.random()}`,
+        id: emailId,
         subject,
         from,
         dateText,
         snippet,
-        parsedDate: parsedDate.toISOString()
+        parsedDate: parsedDate.toISOString(),
+        toMe: toMeIndicator || false
       });
     } catch (e) {
       console.warn('Failed to extract email:', e);

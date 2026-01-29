@@ -4,12 +4,13 @@ A privacy-focused Chrome extension that creates a unified calendar view across m
 
 ## Features
 
-- **Multi-account support**: Aggregate calendar events from multiple Gmail/Google Calendar accounts
-- **Email meeting detection**: Automatically extracts meeting information from emails
+- **Multi-account support**: Aggregate calendar events from multiple Gmail/Google Calendar and Outlook accounts
+- **Email meeting detection**: Automatically extracts meeting information from emails with intelligent filtering
 - **Privacy-safe AI**: Uses WebLLM for on-device inference - your data never leaves your browser
 - **Conflict detection**: Identifies scheduling conflicts across accounts
 - **Configurable keywords**: Customise meeting detection keywords when AI isn't available
 - **Offline-capable**: All processing happens locally
+- **Interactive calendar view**: Click on stats to see details, click entries to view source emails
 
 ## Architecture
 
@@ -25,7 +26,8 @@ src/
 │   └── service-worker.ts    # Central coordinator
 ├── content/
 │   ├── gmail-adapter.js     # Gmail page integration
-│   └── calendar-setup.js    # Calendar page integration
+│   ├── calendar-setup.js    # Google Calendar page integration
+│   └── outlook-calendar-adapter.js  # Outlook Web integration
 ├── popup/
 │   └── popup.html/js        # Extension popup UI
 ├── calendar-view/
@@ -124,12 +126,32 @@ Gmail and Google Calendar pages are accessed via content scripts:
 
 Events come from two sources:
 
-1. **Calendar Scraping** (confirmed): Parses events directly from Google Calendar's web UI via the authenticated session, giving full event details without any public sharing
+1. **Calendar Scraping** (confirmed): Parses events directly from Google Calendar or Outlook Web calendar UI via the authenticated session, giving full event details without any public sharing
 2. **Email Analysis** (tentative):
    - Configurable keyword matching as fallback
    - LLM-powered extraction when model is loaded
 
 This layered approach ensures functionality even without AI, while AI provides better accuracy when available.
+
+#### 7. LLM False Positive Reduction
+
+The LLM-based meeting detection includes multiple safeguards against hallucinations:
+
+- **Source citation requirement**: LLM must quote the exact text that specified the date/time
+- **Source validation**: Quoted text is verified to exist in the original email
+- **5-minute boundary filter**: Times not on 5-minute boundaries (e.g., 7:12 AM) are rejected as likely hallucinations
+- **Two-pass verification**: Extracted dates are verified by a second LLM pass for multi-day events
+- **Newsletter filtering**: Emails from common newsletter/marketing addresses are skipped
+- **Deterministic deduplication**: Same email appearing multiple times gets the same ID, preventing duplicates
+
+#### 8. Multi-Provider Support
+
+The extension supports multiple calendar providers:
+
+- **Gmail/Google Calendar**: Full support for calendar scraping and email analysis
+- **Outlook Web**: Calendar scraping from outlook.live.com and outlook.office.com
+
+Content scripts are injected based on URL patterns, with provider-specific scrapers for each calendar UI.
 
 ## Data Flow
 
@@ -137,17 +159,18 @@ This layered approach ensures functionality even without AI, while AI provides b
 ┌─────────────────────────────────────────────────────────────────┐
 │                        User Interaction                          │
 │  popup.html → "Run Scan" → chrome.runtime.sendMessage            │
+│  calendar-view → "Refresh" → triggers full scan                  │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Service Worker                              │
-│  1. Scrape Google Calendar web UI for events                     │
+│  1. Scrape calendar web UI (Google Calendar or Outlook Web)      │
 │  2. Open background Gmail tab → navigate to #all                 │
 │  3. Inject content script → extract emails                       │
-│  4. Analyze emails with LLM (or keyword fallback)               │
-│  5. Store results in IndexedDB                                   │
-│  6. Broadcast status updates                                     │
+│  4. Analyze emails with LLM (with hallucination filtering)       │
+│  5. Store results in IndexedDB (with deduplication)              │
+│  6. Broadcast status updates to open views                       │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -155,6 +178,7 @@ This layered approach ensures functionality even without AI, while AI provides b
 │                    Calendar View                                 │
 │  Reads from IndexedDB → Renders unified calendar                 │
 │  Shows conflicts, tentative meetings, confirmed events           │
+│  Click stats for details, click entries for email links          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -185,9 +209,9 @@ npm run watch
 ## Configuration
 
 ### Adding a Mailbox
-1. Navigate to Gmail in Chrome
+1. Navigate to Gmail or Outlook Web in Chrome
 2. Click the extension icon
-3. Click "Add Current Mailbox"
+3. Click "Add Current Mailbox" (auto-detects Gmail vs Outlook)
 4. Enter email and display name, then save
 
 ### Configuring Meeting Keywords
