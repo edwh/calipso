@@ -561,17 +561,29 @@ modalOverlay.addEventListener('click', (e) => {
   }
 });
 
-// Refresh button
+// Refresh button - triggers a full scan
 document.getElementById('btn-refresh').addEventListener('click', async () => {
   const btn = document.getElementById('btn-refresh');
   const originalText = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Loading...';
+  btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
 
   try {
-    // Recalculate week start from current date
-    weekStart = getWeekStart(new Date());
-    await loadAllEntries();
+    // Start a scan
+    const result = await chrome.runtime.sendMessage({
+      type: 'START_SCAN',
+      options: { lookbackDays: 30 }
+    });
+
+    if (result.error) {
+      console.log('Scan error:', result.error);
+      alert('Scan error: ' + result.error);
+    } else {
+      // Show progress banner
+      document.getElementById('progress-banner').classList.add('active');
+    }
+  } catch (e) {
+    console.error('Failed to start scan:', e);
   } finally {
     btn.innerHTML = originalText;
     btn.disabled = false;

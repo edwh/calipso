@@ -807,6 +807,24 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
         if (response?.emails?.length > 0 || response?.totalVisible > 0) break;
       } catch (e: any) {
         console.log(`Attempt ${attempt + 1} failed:`, e.message);
+        // Try to inject content script if it's not loaded
+        if (e.message.includes('Receiving end does not exist')) {
+          console.log('Injecting Gmail scraper directly...');
+          try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: tab.id! },
+              func: scrapeGmailEmailsDirect,
+              args: [lookbackDays]
+            });
+            response = results[0]?.result;
+            if (response?.emails?.length > 0) {
+              console.log('Direct injection found', response.emails.length, 'emails');
+              break;
+            }
+          } catch (injectErr: any) {
+            console.log('Failed to inject scraper:', injectErr.message);
+          }
+        }
       }
       await sleep(3000);
     }
@@ -1335,6 +1353,106 @@ function navigateOutlookNextWeek() {
     return { success: true };
   }
   return { success: false, error: 'Next button not found' };
+}
+
+// Gmail direct scraper - injected when content script isn't available
+function scrapeGmailEmailsDirect(lookbackDays: number) {
+  const emails: any[] = [];
+
+  // Calculate cutoff date
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+  cutoffDate.setHours(0, 0, 0, 0);
+
+  // Parse Gmail date
+  function parseGmailDate(dateText: string) {
+    if (!dateText) return null;
+    const now = new Date();
+    const text = dateText.trim();
+
+    // Time only (today): "3:45 PM"
+    const timeMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (timeMatch) {
+      const date = new Date(now);
+      let hours = parseInt(timeMatch[1]);
+      const minutes = parseInt(timeMatch[2]);
+      const ampm = timeMatch[3]?.toUpperCase();
+      if (ampm === 'PM' && hours !== 12) hours += 12;
+      if (ampm === 'AM' && hours === 12) hours = 0;
+      date.setHours(hours, minutes, 0, 0);
+      return date;
+    }
+
+    // "Yesterday"
+    if (text.toLowerCase() === 'yesterday') {
+      const date = new Date(now);
+      date.setDate(date.getDate() - 1);
+      return date;
+    }
+
+    // Month and day: "Jan 25"
+    const monthDayMatch = text.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})$/i);
+    if (monthDayMatch) {
+      const months: any = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const month = months[monthDayMatch[1].toLowerCase()];
+      const day = parseInt(monthDayMatch[2]);
+      const date = new Date(now.getFullYear(), month, day);
+      if (date > now) date.setFullYear(date.getFullYear() - 1);
+      return date;
+    }
+
+    // Full date: "9/20/22"
+    const fullDateMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (fullDateMatch) {
+      const month = parseInt(fullDateMatch[1]) - 1;
+      const day = parseInt(fullDateMatch[2]);
+      let year = parseInt(fullDateMatch[3]);
+      if (year < 100) year += year > 50 ? 1900 : 2000;
+      return new Date(year, month, day);
+    }
+
+    return null;
+  }
+
+  // Find email rows
+  const rows = document.querySelectorAll('tr.zA');
+
+  for (const row of rows) {
+    try {
+      const subjectEl = row.querySelector('.y6 span, .bog');
+      const subject = subjectEl?.textContent?.trim() || 'No Subject';
+
+      const senderEl = row.querySelector('.yW span[email], .yP, .zF');
+      const from = (senderEl as HTMLElement)?.getAttribute('email') || senderEl?.textContent?.trim() || 'Unknown';
+
+      const dateEl = row.querySelector('.xW span, .bq3');
+      const dateText = dateEl?.textContent?.trim() || (dateEl as HTMLElement)?.getAttribute('title') || '';
+
+      const snippetEl = row.querySelector('.y2, .Zs');
+      const snippet = snippetEl?.textContent?.trim() || '';
+
+      const parsedDate = parseGmailDate(dateText);
+      if (!parsedDate || parsedDate < cutoffDate) continue;
+
+      emails.push({
+        id: `direct-${Date.now()}-${Math.random()}`,
+        subject,
+        from,
+        dateText,
+        snippet,
+        parsedDate: parsedDate.toISOString()
+      });
+    } catch (e) {
+      console.warn('Failed to extract email:', e);
+    }
+  }
+
+  return {
+    emailCount: emails.length,
+    totalVisible: rows.length,
+    cutoffDate: cutoffDate.toISOString(),
+    emails: emails.slice(0, 50)
+  };
 }
 
 console.log('Unified Calendar: Service worker initialized');
