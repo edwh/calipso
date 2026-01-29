@@ -7,8 +7,8 @@ A privacy-focused Chrome extension that creates a unified calendar view across m
 - **Multi-account support**: Aggregate calendar events from multiple Gmail/Google Calendar accounts
 - **Email meeting detection**: Automatically extracts meeting information from emails
 - **Privacy-safe AI**: Uses WebLLM for on-device inference - your data never leaves your browser
-- **iCal integration**: Import events via Google Calendar's private iCal URLs
 - **Conflict detection**: Identifies scheduling conflicts across accounts
+- **Configurable keywords**: Customise meeting detection keywords when AI isn't available
 - **Offline-capable**: All processing happens locally
 
 ## Architecture
@@ -32,7 +32,6 @@ src/
 │   └── index.html/calendar.js  # Full calendar view
 └── lib/
     ├── db.ts                # IndexedDB via idb
-    ├── ical-parser.ts       # iCal feed parsing
     └── meeting-extractor.ts # Text analysis utilities
 ```
 
@@ -123,12 +122,11 @@ Gmail and Google Calendar pages are accessed via content scripts:
 
 #### 6. Hybrid Event Detection Strategy
 
-Events come from three sources:
+Events come from two sources:
 
-1. **iCal Feeds** (highest confidence): Direct calendar data via private URLs
-2. **Calendar DOM Scraping**: Parses visible events from Google Calendar
-3. **Email Analysis** (lowest confidence → "tentative"):
-   - Keyword matching as fallback
+1. **Calendar Scraping** (confirmed): Parses events directly from Google Calendar's web UI via the authenticated session, giving full event details without any public sharing
+2. **Email Analysis** (tentative):
+   - Configurable keyword matching as fallback
    - LLM-powered extraction when model is loaded
 
 This layered approach ensures functionality even without AI, while AI provides better accuracy when available.
@@ -144,7 +142,7 @@ This layered approach ensures functionality even without AI, while AI provides b
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Service Worker                              │
-│  1. Fetch iCal feeds (if configured)                            │
+│  1. Scrape Google Calendar web UI for events                     │
 │  2. Open background Gmail tab → navigate to #all                 │
 │  3. Inject content script → extract emails                       │
 │  4. Analyze emails with LLM (or keyword fallback)               │
@@ -190,29 +188,15 @@ npm run watch
 1. Navigate to Gmail in Chrome
 2. Click the extension icon
 3. Click "Add Current Mailbox"
-4. Optionally add your private iCal URL for more accurate calendar data
+4. Enter email and display name, then save
 
-### Getting Your iCal URL
+### Configuring Meeting Keywords
+1. Click the extension icon
+2. In Settings, click "Edit" next to "Meeting Keywords"
+3. Add or remove keywords (one per line)
+4. Click "Save"
 
-Google Calendar offers two types of iCal URL:
-
-**Personal Google accounts** typically show a "Secret address in iCal format" in Calendar Settings → (your calendar) → Integrate calendar. This URL contains an unguessable token and provides full event details without making your calendar public.
-
-**Google Workspace accounts** may not show the secret address (depends on admin policy). In this case you have two options:
-
-1. **Public iCal URL** (Settings → Integrate calendar → "Public address in iCal format"):
-   - Requires enabling "Make available to public" in Access permissions
-   - By default only exposes free/busy information (events show as "Busy")
-   - To get full details, change the public access dropdown to "See all event details"
-   - See **Security: Public Calendar Access** below
-
-2. **Web scraping fallback**: If no iCal URL is configured, the extension falls back to scraping the Google Calendar web UI, which shows full event details for the logged-in user.
-
-To add an iCal URL:
-1. Go to Google Calendar Settings
-2. Select your calendar → "Integrate calendar"
-3. Copy the secret or public iCal address
-4. Paste into the "Private iCal URL" field in the extension popup
+Emails with subjects or bodies containing any of these keywords will be flagged as potential meetings. Default keywords: meet, call, schedule, available, calendar, appointment, invite, zoom, teams, webex.
 
 ### Loading the AI Model
 1. Click "Load Model" in the extension popup
@@ -224,17 +208,6 @@ To add an iCal URL:
 - **No external API calls**: All AI inference runs locally via WebGPU
 - **No telemetry**: No usage data is collected
 - **Data stays local**: Calendar and email data only stored in browser IndexedDB
-- **iCal URLs are secrets**: Treat your private iCal URL like a password
-
-### Security: Public Calendar Access
-
-If you use the **public iCal URL** (because your Workspace admin doesn't expose the secret address), be aware of the following:
-
-- **Making a calendar public** means anyone on the internet can view it via the public URL. The URL contains your email address (e.g. `https://calendar.google.com/calendar/ical/you%40example.com/public/basic.ics`) so it is guessable - there is **no security through obscurity**.
-- **Default public access is free/busy only**: Google defaults to "See only free/busy (hide details)", which means the public iCal feed will only show time slots as "Busy" without event titles, descriptions, or attendees.
-- **Changing to "See all event details"** exposes full event information (titles, locations, descriptions, attendees) to anyone who requests the public URL. This may leak sensitive meeting information.
-- **The secret iCal URL** (available on personal Google accounts) contains a long random token that is not guessable. This is the safer option when available.
-- **Recommendation**: If privacy is a concern, leave the iCal URL blank and rely on the web scraping fallback, which accesses calendar data through your authenticated browser session without making anything public.
 
 ## Limitations
 

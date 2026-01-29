@@ -350,19 +350,6 @@
         <label class="form-label" for="mailbox-name">Display Name</label>
         <input type="text" id="mailbox-name" class="form-input" placeholder="Work Gmail">
       </div>
-      <div class="form-group">
-        <label class="form-label" for="mailbox-ical-url">Private iCal URL (optional)</label>
-        <input type="url" id="mailbox-ical-url" class="form-input" placeholder="https://calendar.google.com/calendar/ical/...">
-        <div style="font-size: 11px; color: #5f6368; margin-top: 4px;">
-          Google Calendar → Settings → calendar → Secret address in iCal format
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-checkbox">
-          <input type="checkbox" id="setup-calendar-sync">
-          Open calendar settings after adding
-        </label>
-      </div>
       <div class="form-actions">
         <button id="btn-save-mailbox" class="btn btn-primary">Save Mailbox</button>
         <button id="btn-cancel-add" class="btn btn-secondary">Cancel</button>
@@ -418,6 +405,20 @@
     </div>
     <div id="llm-status" style="font-size:11px;color:#5f6368;margin-top:4px">
       Load the AI model for smarter meeting detection from emails.
+    </div>
+    <div class="setting-row" style="margin-top:12px">
+      <span class="setting-label">Meeting Keywords</span>
+      <button id="btn-edit-keywords" class="btn btn-secondary" style="padding:4px 12px;font-size:12px;width:auto">⚙️ Edit</button>
+    </div>
+    <div id="keywords-editor" style="display:none;margin-top:8px">
+      <div style="font-size:11px;color:#5f6368;margin-bottom:6px">
+        Emails containing these keywords (in subject or body) will be flagged as potential meetings. One per line.
+      </div>
+      <textarea id="keywords-input" class="form-input" style="height:120px;font-size:12px;resize:vertical"></textarea>
+      <div style="gap:8px;margin-top:8px;display:flex">
+        <button id="btn-save-keywords" class="btn btn-primary" style="flex:1;padding:6px 12px;font-size:12px">Save</button>
+        <button id="btn-reset-keywords" class="btn btn-secondary" style="flex:1;padding:6px 12px;font-size:12px">Reset Defaults</button>
+      </div>
     </div>
   </div>
 

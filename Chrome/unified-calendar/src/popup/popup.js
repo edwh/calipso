@@ -24,11 +24,16 @@ const llmStatus = document.getElementById('llm-status');
 const addMailboxForm = document.getElementById('add-mailbox-form');
 const mailboxEmailInput = document.getElementById('mailbox-email');
 const mailboxNameInput = document.getElementById('mailbox-name');
-const mailboxIcalUrlInput = document.getElementById('mailbox-ical-url');
-const setupCalendarSync = document.getElementById('setup-calendar-sync');
 const btnSaveMailbox = document.getElementById('btn-save-mailbox');
 const btnCancelAdd = document.getElementById('btn-cancel-add');
 const statusMessage = document.getElementById('status-message');
+
+// Keyword settings elements
+const btnEditKeywords = document.getElementById('btn-edit-keywords');
+const keywordsEditor = document.getElementById('keywords-editor');
+const keywordsInput = document.getElementById('keywords-input');
+const btnSaveKeywords = document.getElementById('btn-save-keywords');
+const btnResetKeywords = document.getElementById('btn-reset-keywords');
 
 // Store current Gmail info
 let currentGmailInfo = null;
@@ -56,7 +61,6 @@ async function loadMailboxes() {
       <div class="mailbox-info">
         <div class="mailbox-name">${escapeHtml(mb.name)}</div>
         <div class="mailbox-email">${escapeHtml(mb.email)}</div>
-        <div class="mailbox-ical" style="font-size:11px;color:${mb.icalUrl ? '#34a853' : '#ea4335'}">${mb.icalUrl ? 'iCal configured' : 'No iCal URL'}</div>
       </div>
       <button class="btn-edit-mailbox" data-id="${mb.id}" style="background:none;border:none;cursor:pointer;font-size:16px" title="Edit">✏️</button>
     </div>
@@ -165,8 +169,6 @@ function hideAddForm() {
   btnAdd.style.display = 'flex';
   mailboxEmailInput.value = '';
   mailboxNameInput.value = '';
-  mailboxIcalUrlInput.value = '';
-  setupCalendarSync.checked = false;
   currentGmailInfo = null;
   editingMailboxId = null;
   btnSaveMailbox.textContent = 'Save Mailbox';
@@ -179,11 +181,10 @@ function editMailbox(id, mb) {
   editingMailboxId = id;
   mailboxEmailInput.value = mb.email;
   mailboxNameInput.value = mb.name;
-  mailboxIcalUrlInput.value = mb.icalUrl || '';
   addMailboxForm.classList.add('active');
   btnAdd.style.display = 'none';
   btnSaveMailbox.textContent = 'Update Mailbox';
-  mailboxIcalUrlInput.focus();
+  mailboxNameInput.focus();
 }
 
 // Button handlers
@@ -221,13 +222,11 @@ btnSaveMailbox.addEventListener('click', async () => {
     return;
   }
 
-  const icalUrl = mailboxIcalUrlInput.value.trim();
-
   if (editingMailboxId) {
     // Update existing mailbox
     const mailbox = await chrome.runtime.sendMessage({
       type: 'UPDATE_MAILBOX',
-      mailbox: { id: editingMailboxId, name, email, icalUrl }
+      mailbox: { id: editingMailboxId, name, email }
     });
 
     if (mailbox?.id) {
@@ -248,7 +247,6 @@ btnSaveMailbox.addEventListener('click', async () => {
       name,
       email,
       accountIndex: currentGmailInfo?.accountIndex || 0,
-      icalUrl,
       color: getRandomColor()
     }
   });
@@ -256,12 +254,6 @@ btnSaveMailbox.addEventListener('click', async () => {
   if (mailbox?.id) {
     await loadMailboxes();
     showStatus('Mailbox added successfully!', 'success');
-
-    if (setupCalendarSync.checked) {
-      chrome.tabs.create({
-        url: `https://calendar.google.com/calendar/u/${currentGmailInfo?.accountIndex || 0}/r/settings`
-      });
-    }
 
     hideAddForm();
   } else {
@@ -376,6 +368,37 @@ chrome.runtime.onMessage.addListener((message) => {
       llmStatus.textContent += ` (${Math.round(message.progress * 100)}%)`;
     }
   }
+});
+
+// Keyword settings
+const DEFAULT_KEYWORDS = ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
+
+btnEditKeywords.addEventListener('click', async () => {
+  const visible = keywordsEditor.style.display !== 'none';
+  if (visible) {
+    keywordsEditor.style.display = 'none';
+    return;
+  }
+  keywordsEditor.style.display = 'block';
+  const result = await chrome.storage.local.get('meetingKeywords');
+  const keywords = result.meetingKeywords || DEFAULT_KEYWORDS;
+  keywordsInput.value = keywords.join('\n');
+});
+
+btnSaveKeywords.addEventListener('click', async () => {
+  const keywords = keywordsInput.value
+    .split('\n')
+    .map(k => k.trim().toLowerCase())
+    .filter(k => k.length > 0);
+  await chrome.storage.local.set({ meetingKeywords: keywords });
+  showStatus(`Saved ${keywords.length} keywords`, 'success');
+  keywordsEditor.style.display = 'none';
+});
+
+btnResetKeywords.addEventListener('click', async () => {
+  await chrome.storage.local.set({ meetingKeywords: DEFAULT_KEYWORDS });
+  keywordsInput.value = DEFAULT_KEYWORDS.join('\n');
+  showStatus('Keywords reset to defaults', 'success');
 });
 
 // Utility functions

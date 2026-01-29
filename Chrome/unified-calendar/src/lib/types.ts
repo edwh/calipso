@@ -12,7 +12,6 @@ export function createMailboxConfig({
   name,
   email,
   accountIndex,
-  icalUrl = '',
   color = '#4285f4'
 }) {
   return {
@@ -20,7 +19,6 @@ export function createMailboxConfig({
     name,
     email,
     accountIndex,
-    icalUrl,
     color,
     lastScanTimestamp: null,
     lastScannedEmailId: null,

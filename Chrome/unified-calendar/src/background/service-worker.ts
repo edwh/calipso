@@ -5,7 +5,6 @@
  */
 
 import * as storage from '../lib/storage';
-import { fetchAndParseIcal } from '../lib/ics-parser';
 import { CreateMLCEngine, MLCEngine } from '@mlc-ai/web-llm';
 
 // Type definitions
@@ -354,26 +353,7 @@ async function scanCalendar(mailbox: any) {
     // Clear old calendar entries for this mailbox
     await storage.clearEntriesBySource(mailbox.id, 'calendar');
 
-    // If iCal URL is configured, use it
-    if (mailbox.icalUrl) {
-      const entries = await fetchAndParseIcal(
-        mailbox.icalUrl,
-        mailbox.id,
-        mailbox.name
-      );
-      for (const entry of entries) {
-        await storage.saveEntry(entry);
-        broadcastNewEntry(entry);
-      }
-      await storage.addScanLog({
-        mailboxId: mailbox.id,
-        action: 'calendar_ical_scanned',
-        details: { entriesFound: entries.length }
-      });
-      return;
-    }
-
-    // Otherwise, scrape from Google Calendar web page
+    // Scrape from Google Calendar web page
     const calUrl = `https://calendar.google.com/calendar/u/${mailbox.accountIndex}/r/week`;
 
     // Try to find an existing calendar tab
@@ -384,18 +364,16 @@ async function scanCalendar(mailbox: any) {
     let tab: chrome.tabs.Tab;
     let createdTab = false;
 
-    if (existingTabs.length > 0) {
-      tab = existingTabs[0];
-      await chrome.tabs.update(tab.id!, { url: calUrl });
-      await sleep(4000);
-      console.log('Reusing existing Calendar tab:', tab.id);
-    } else {
-      tab = await chrome.tabs.create({ url: calUrl, active: false });
-      createdTab = true;
-      await waitForTabLoad(tab.id!);
-      await sleep(5000);
-      console.log('Created new Calendar tab:', tab.id);
+    // Close any existing calendar tabs to ensure clean content script injection
+    for (const t of existingTabs) {
+      try { await chrome.tabs.remove(t.id!); } catch (e) {}
     }
+
+    tab = await chrome.tabs.create({ url: calUrl, active: false });
+    createdTab = true;
+    await waitForTabLoad(tab.id!);
+    await sleep(5000);
+    console.log('Created Calendar tab:', tab.id);
 
     // Scrape events from the calendar page
     let response: any = null;
@@ -553,8 +531,9 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
 
         // Keyword fallback when LLM is not available or didn't find a meeting
         if (!meetingInfo) {
-          const meetingKeywords = ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
-          const hasKeyword = meetingKeywords.some(kw =>
+          const stored = await chrome.storage.local.get('meetingKeywords');
+          const meetingKeywords = stored.meetingKeywords || ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
+          const hasKeyword = meetingKeywords.some((kw: string) =>
             email.subject.toLowerCase().includes(kw) ||
             email.snippet.toLowerCase().includes(kw)
           );
