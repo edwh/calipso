@@ -34,6 +34,7 @@ interface MeetingAnalysis {
   isMeeting: boolean;
   title?: string;
   date?: string;
+  endDate?: string;
   time?: string;
   duration?: number;
   confidence?: string;
@@ -92,7 +93,7 @@ async function analyzeEmailWithLLM(email: Email): Promise<MeetingAnalysis | null
     return null;
   }
 
-  const prompt = `Analyze this email for meeting/appointment scheduling content.
+  const prompt = `Analyze this email for meeting/appointment/event scheduling content.
 
 From: ${email.from || 'unknown'}
 Date: ${email.dateText || email.parsedDate || 'unknown'}
@@ -102,21 +103,24 @@ Snippet: ${email.snippet || ''}
 If this email discusses a specific meeting, appointment, or scheduled event, respond with JSON:
 {
   "isMeeting": true,
-  "title": "meeting title",
+  "title": "event title",
   "date": "YYYY-MM-DD",
+  "endDate": "YYYY-MM-DD",
   "time": "HH:MM",
   "duration": 60,
   "confidence": "high|medium|low"
 }
 
-If NOT about a specific scheduled meeting/appointment, respond with:
+If NOT about a specific scheduled event, respond with:
 {"isMeeting": false}
 
 Important:
-- Only mark as meeting if there's a SPECIFIC date/time mentioned or clearly implied
-- Interpret relative dates (e.g., "next Wednesday", "tomorrow") relative to the email date
+- Only mark as meeting if there's a SPECIFIC date mentioned or clearly implied
+- For multi-day events (e.g., "Jan 8-11", "January 8th/11th"), set date to start and endDate to end
+- For single-day events, omit endDate or set it same as date
+- Interpret relative dates (e.g., "next Wednesday") relative to the email date
 - Generic mentions of "let's meet sometime" without a specific time are NOT meetings
-- Scheduled calls, appointments, deliveries etc. ARE meetings
+- Bookings, reservations, scheduled calls, appointments, deliveries ARE events
 - Respond with JSON only, no other text`;
 
   try {
@@ -778,6 +782,13 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
             startTime = new Date(year, month - 1, day, hour, minute);
             const duration = meetingInfo.duration || 60;
             endTime = new Date(startTime.getTime() + duration * 60 * 1000);
+          } else if (meetingInfo.date && meetingInfo.endDate && meetingInfo.endDate !== meetingInfo.date) {
+            // Multi-day event
+            const [year, month, day] = meetingInfo.date.split('-').map(Number);
+            const [endYear, endMonth, endDay] = meetingInfo.endDate.split('-').map(Number);
+            startTime = new Date(year, month - 1, day, 0, 0);
+            endTime = new Date(endYear, endMonth - 1, endDay, 23, 59);
+            isAllDay = true;
           } else if (meetingInfo.date) {
             // Date extracted but no time - create all-day event
             const [year, month, day] = meetingInfo.date.split('-').map(Number);
