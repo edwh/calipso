@@ -134,6 +134,38 @@
     /* Calendar Grid */
     .calendar-container {
       padding: 24px;
+      overflow-x: auto;
+    }
+
+    .calendar-scroll-wrapper {
+      min-width: 100%;
+      overflow-x: auto;
+    }
+
+    .nav-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .nav-btn {
+      padding: 8px 12px;
+      border: 1px solid #e8eaed;
+      background: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .nav-btn:hover {
+      background: #f1f3f4;
+    }
+
+    .nav-info {
+      font-size: 14px;
+      color: #5f6368;
+      margin-left: 12px;
     }
 
     .week-header {
@@ -266,8 +298,9 @@
       opacity: 0.85;
     }
 
-    .calendar-entry.conflict {
-      box-shadow: 0 0 0 2px #ea4335;
+    .calendar-entry.conflict .entry-title,
+    .calendar-entry.conflict .entry-time {
+      color: #d93025;
     }
 
     .entry-title {
@@ -530,7 +563,16 @@
       <!-- Populated dynamically -->
     </div>
 
+    <!-- Navigation -->
+    <div class="nav-controls">
+      <button id="nav-prev" class="nav-btn">← Previous Week</button>
+      <button id="nav-today" class="nav-btn">Today</button>
+      <button id="nav-next" class="nav-btn">Next Week →</button>
+      <span id="nav-info" class="nav-info"></span>
+    </div>
+
     <!-- Calendar -->
+    <div class="calendar-scroll-wrapper">
     <div class="week-header" id="week-header">
       <div class="week-header-cell"></div>
       <!-- Days populated dynamically -->
@@ -541,6 +583,7 @@
         <!-- Times populated dynamically -->
       </div>
       <!-- Day columns populated dynamically -->
+    </div>
     </div>
   </div>
 

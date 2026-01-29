@@ -3,7 +3,8 @@
  */
 
 // State
-let entries = [];
+let allEntries = [];  // All entries for the year
+let entries = [];     // Entries for current view
 let mailboxes = [];
 let weekStart = getWeekStart(new Date());
 let displayHourStart = 8;  // Default start hour (will be adjusted based on entries)
@@ -39,22 +40,44 @@ async function loadMailboxes() {
   updateLegend();
 }
 
-// Load entries
-async function loadEntries() {
+// Load all entries for the year
+async function loadAllEntries() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yearFromNow = new Date(today);
+  yearFromNow.setFullYear(yearFromNow.getFullYear() + 1);
+
+  allEntries = await chrome.runtime.sendMessage({
+    type: 'GET_ENTRIES',
+    start: today.toISOString(),
+    end: yearFromNow.toISOString()
+  }) || [];
+
+  updateCurrentView();
+}
+
+// Update entries for current week view
+function updateCurrentView() {
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 7);
 
-  entries = await chrome.runtime.sendMessage({
-    type: 'GET_ENTRIES',
-    start: weekStart.toISOString(),
-    end: weekEnd.toISOString()
-  }) || [];
+  // Filter entries for current week
+  entries = allEntries.filter(entry => {
+    const entryStart = new Date(entry.startTime);
+    return entryStart >= weekStart && entryStart < weekEnd;
+  });
 
   // Calculate hour range and rebuild calendar
   calculateDisplayHours();
   buildCalendarStructure();
   renderEntries();
   updateStats();
+  updateNavInfo();
+}
+
+// Load entries (backwards compatibility)
+async function loadEntries() {
+  await loadAllEntries();
 }
 
 // Calculate display hour range based on entries
@@ -373,13 +396,27 @@ function updateStats() {
     perMailbox[name] = (perMailbox[name] || 0) + 1;
   }
 
-  const breakdown = Object.entries(perMailbox)
-    .map(([name, count]) => `${count} ${name}`)
-    .join(', ');
+  // Build breakdown with colored dots
+  const breakdownItems = Object.entries(perMailbox).map(([name, count]) => {
+    const mb = mailboxes.find(m => m.name === name);
+    const color = mb?.color || '#5f6368';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>${count} ${escapeHtml(name)}</span>`;
+  });
 
-  // Update display
-  statConfirmed.innerHTML = confirmed.length +
-    (breakdown ? `<div style="font-size:11px;color:#5f6368;font-weight:normal">${breakdown}</div>` : '');
+  // Update display - number only, breakdown goes below the label
+  statConfirmed.textContent = confirmed.length;
+
+  // Update the breakdown below the label
+  const statCard = statConfirmed.closest('.stat-card');
+  let breakdownEl = statCard.querySelector('.stat-breakdown');
+  if (!breakdownEl) {
+    breakdownEl = document.createElement('div');
+    breakdownEl.className = 'stat-breakdown';
+    breakdownEl.style.cssText = 'font-size:11px;color:#5f6368;margin-top:4px';
+    statCard.appendChild(breakdownEl);
+  }
+  breakdownEl.innerHTML = breakdownItems.join('') || '';
+
   statTentative.textContent = tentative.length;
   statConflicts.textContent = conflicts;
 }
@@ -534,12 +571,39 @@ document.getElementById('btn-refresh').addEventListener('click', async () => {
   try {
     // Recalculate week start from current date
     weekStart = getWeekStart(new Date());
-    await loadEntries();
+    await loadAllEntries();
   } finally {
     btn.innerHTML = originalText;
     btn.disabled = false;
   }
 });
+
+// Navigation buttons
+document.getElementById('nav-prev').addEventListener('click', () => {
+  weekStart.setDate(weekStart.getDate() - 7);
+  updateCurrentView();
+});
+
+document.getElementById('nav-next').addEventListener('click', () => {
+  weekStart.setDate(weekStart.getDate() + 7);
+  updateCurrentView();
+});
+
+document.getElementById('nav-today').addEventListener('click', () => {
+  weekStart = getWeekStart(new Date());
+  updateCurrentView();
+});
+
+// Update navigation info
+function updateNavInfo() {
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+
+  const startStr = weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endStr = weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  document.getElementById('nav-info').textContent = `${startStr} - ${endStr}`;
+}
 
 // ============ Utility Functions ============
 
