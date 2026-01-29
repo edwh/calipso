@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Unified Calendar",
+  "version": "0.1.0",
+  "description": "Unified calendar view across multiple Gmail accounts with privacy-safe meeting detection",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "activeTab",
+    "notifications",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://calendar.google.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/service-worker.ddaa36d2.js"
+  },
+  "action": {
+    "default_popup": "dist/popup.af6529f9.html",
+    "default_icon": {
+      "16": "dist/icon16.699bb42f.png",
+      "32": "dist/icon32.46fd2050.png",
+      "48": "dist/icon48.d6f1e0ce.png",
+      "128": "dist/icon128.0ca2cfed.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["dist/gmail-adapter.02848457.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://calendar.google.com/*"],
+      "js": ["dist/calendar-setup.de6b7e09.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/calendar-view/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "dist/icon16.699bb42f.png",
+    "32": "dist/icon32.46fd2050.png",
+    "48": "dist/icon48.d6f1e0ce.png",
+    "128": "dist/icon128.0ca2cfed.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; default-src 'self' data:; connect-src 'self' data: https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://cdn-lfs-us-1.hf.co https://raw.githubusercontent.com"
+  }
+}

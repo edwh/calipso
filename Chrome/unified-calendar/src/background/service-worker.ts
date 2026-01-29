@@ -63,7 +63,7 @@ async function initLLM(): Promise<{ ready?: boolean; initializing?: boolean; err
   try {
     console.log('Initializing WebLLM...');
 
-    llmEngine = await CreateMLCEngine('Phi-3.5-mini-instruct-q4f16_1-MLC', {
+    llmEngine = await CreateMLCEngine('Llama-3.2-1B-Instruct-q4f16_1-MLC', {
       initProgressCallback: (progress) => {
         // Broadcast progress to popup
         chrome.runtime.sendMessage({
