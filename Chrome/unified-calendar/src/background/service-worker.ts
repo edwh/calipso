@@ -353,7 +353,15 @@ async function scanCalendar(mailbox: any) {
     // Clear old calendar entries for this mailbox
     await storage.clearEntriesBySource(mailbox.id, 'calendar');
 
-    // Scrape from Google Calendar web page
+    // Route to appropriate provider
+    if (mailbox.provider === 'outlook') {
+      await scanOutlookCalendar(mailbox);
+      return;
+    }
+
+    // Gmail: Scrape from Google Calendar web page
+    // We'll scan both current week and next week to cover rolling 7 days
+    const today = new Date();
     const calUrl = `https://calendar.google.com/calendar/u/${mailbox.accountIndex}/r/week`;
 
     // Try to find an existing calendar tab
@@ -375,25 +383,65 @@ async function scanCalendar(mailbox: any) {
     await sleep(5000);
     console.log('Created Calendar tab:', tab.id);
 
-    // Scrape events from the calendar page
-    let response: any = null;
+    // Scrape events from current week AND next week to cover rolling 7 days
+    const allEvents: any[] = [];
+
+    // Scrape current week
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        response = await chrome.tabs.sendMessage(tab.id!, {
+        const response = await chrome.tabs.sendMessage(tab.id!, {
           type: 'SCRAPE_CALENDAR_EVENTS'
         });
-        console.log(`Calendar scrape attempt ${attempt + 1}: ${response?.count || 0} events`);
-        if (response?.count > 0) break;
+        console.log(`Calendar scrape (this week) attempt ${attempt + 1}: ${response?.count || 0} events`);
+        if (response?.events) {
+          allEvents.push(...response.events);
+          break;
+        }
       } catch (e: any) {
         console.log(`Calendar scrape attempt ${attempt + 1} failed:`, e.message);
       }
-      await sleep(3000);
+      await sleep(2000);
     }
 
-    if (response?.events) {
-      currentScan!.progress.total = response.events.length;
-      for (let i = 0; i < response.events.length; i++) {
-        const event = response.events[i];
+    // Navigate to next week and scrape
+    try {
+      await chrome.tabs.sendMessage(tab.id!, { type: 'NAVIGATE_NEXT_WEEK' });
+      await sleep(3000); // Wait for calendar to update
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await chrome.tabs.sendMessage(tab.id!, {
+            type: 'SCRAPE_CALENDAR_EVENTS'
+          });
+          console.log(`Calendar scrape (next week) attempt ${attempt + 1}: ${response?.count || 0} events`);
+          if (response?.events) {
+            allEvents.push(...response.events);
+            break;
+          }
+        } catch (e: any) {
+          console.log(`Next week scrape attempt ${attempt + 1} failed:`, e.message);
+        }
+        await sleep(2000);
+      }
+    } catch (e) {
+      console.log('Could not navigate to next week:', e);
+    }
+
+    // Deduplicate events by title+startTime
+    const seen = new Set();
+    const uniqueEvents = allEvents.filter(event => {
+      const key = event.title + event.startTime;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    console.log(`Total unique events: ${uniqueEvents.length}`);
+
+    if (uniqueEvents.length > 0) {
+      currentScan!.progress.total = uniqueEvents.length;
+      for (let i = 0; i < uniqueEvents.length; i++) {
+        const event = uniqueEvents[i];
         currentScan!.progress.current = i + 1;
         currentScan!.progress.currentItem = event.title;
         broadcastScanStatus();
@@ -441,6 +489,149 @@ async function scanCalendar(mailbox: any) {
   }
 }
 
+async function scanOutlookCalendar(mailbox: any) {
+  currentScan!.progress.currentItem = `Fetching Outlook calendar: ${mailbox.name}`;
+  broadcastScanStatus();
+
+  try {
+    // Determine Outlook calendar URL based on email domain
+    const email = mailbox.email || '';
+    let calUrl = 'https://outlook.live.com/calendar/';
+
+    // Work/school accounts use office.com
+    if (email.includes('@') && !email.match(/@(outlook|hotmail|live|msn)\./i)) {
+      calUrl = 'https://outlook.office.com/calendar/';
+    }
+
+    // Close any existing Outlook tabs and create fresh one
+    const existingTabs = await chrome.tabs.query({
+      url: ['https://outlook.live.com/*', 'https://outlook.office.com/*', 'https://outlook.office365.com/*']
+    });
+
+    for (const t of existingTabs) {
+      try { await chrome.tabs.remove(t.id!); } catch (e) {}
+    }
+
+    console.log('Opening Outlook calendar URL:', calUrl);
+    const tab = await chrome.tabs.create({ url: calUrl, active: false });
+    const createdTab = true;
+    await waitForTabLoad(tab.id!);
+    await sleep(6000); // Extra time for Outlook to fully load
+    console.log('Created Outlook calendar tab:', tab.id, 'URL:', tab.url);
+
+    // Scrape events by injecting scraper function directly (bypasses content script issues)
+    const allEvents: any[] = [];
+
+    // Scrape current view using direct script injection
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          func: scrapeOutlookCalendarDirect
+        });
+        const response = results[0]?.result;
+        console.log(`Outlook scrape (this week) attempt ${attempt + 1}: ${response?.count || 0} events`);
+        if (response?.events && response.events.length > 0) {
+          allEvents.push(...response.events);
+          break;
+        }
+      } catch (e: any) {
+        console.log(`Outlook scrape attempt ${attempt + 1} failed:`, e.message);
+      }
+      await sleep(2000);
+    }
+
+    // Navigate to next week and scrape
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id! },
+        func: navigateOutlookNextWeek
+      });
+      await sleep(3000);
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id! },
+            func: scrapeOutlookCalendarDirect
+          });
+          const response = results[0]?.result;
+          console.log(`Outlook scrape (next week) attempt ${attempt + 1}: ${response?.count || 0} events`);
+          if (response?.events && response.events.length > 0) {
+            allEvents.push(...response.events);
+            break;
+          }
+        } catch (e: any) {
+          console.log(`Outlook next week scrape attempt ${attempt + 1} failed:`, e.message);
+        }
+        await sleep(2000);
+      }
+    } catch (e) {
+      console.log('Could not navigate Outlook to next week:', e);
+    }
+
+    // Deduplicate events
+    const seen = new Set();
+    const uniqueEvents = allEvents.filter(event => {
+      const key = event.title + event.startTime;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    console.log(`Outlook total unique events: ${uniqueEvents.length}`);
+
+    if (uniqueEvents.length > 0) {
+      currentScan!.progress.total = uniqueEvents.length;
+      for (let i = 0; i < uniqueEvents.length; i++) {
+        const event = uniqueEvents[i];
+        currentScan!.progress.current = i + 1;
+        currentScan!.progress.currentItem = event.title;
+        broadcastScanStatus();
+
+        const entry = {
+          id: `cal-${mailbox.id}-${hashString(event.title + event.startTime)}`,
+          mailboxId: mailbox.id,
+          title: event.title,
+          startTime: event.startTime,
+          endTime: event.endTime,
+          status: 'confirmed',
+          isAllDay: event.isAllDay || false,
+          source: {
+            type: 'calendar',
+            calendarName: mailbox.name,
+            location: event.location || '',
+            rsvpStatus: event.rsvpStatus || ''
+          },
+          conflicts: [] as string[]
+        };
+
+        await storage.saveEntry(entry);
+        broadcastNewEntry(entry);
+      }
+    }
+
+    // Only close the tab if we created it
+    if (createdTab) {
+      await chrome.tabs.remove(tab.id!);
+    }
+
+    await storage.addScanLog({
+      mailboxId: mailbox.id,
+      action: 'outlook_calendar_scraped',
+      details: { entriesFound: uniqueEvents.length }
+    });
+
+  } catch (error: any) {
+    console.error('Error scanning Outlook calendar:', error);
+    await storage.addScanLog({
+      mailboxId: mailbox.id,
+      action: 'outlook_calendar_error',
+      details: { error: error.message }
+    });
+  }
+}
+
 // Simple string hash for generating deterministic IDs
 function hashString(str: string): string {
   let hash = 0;
@@ -453,6 +644,12 @@ function hashString(str: string): string {
 }
 
 async function scanEmails(mailbox: any, lookbackDays: number) {
+  // Skip email scanning for Outlook (not yet implemented)
+  if (mailbox.provider === 'outlook') {
+    console.log('Skipping email scan for Outlook mailbox (not yet implemented)');
+    return;
+  }
+
   currentScan!.phase = 'emails';
   currentScan!.progress.currentItem = `Opening Gmail: ${mailbox.name}`;
   broadcastScanStatus();
@@ -772,5 +969,169 @@ chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) =
     }
   }
 })();
+
+// ============ Outlook Injected Functions ============
+// These functions are injected directly into Outlook pages via chrome.scripting.executeScript
+
+function scrapeOutlookCalendarDirect() {
+  const events: any[] = [];
+  const seenEvents = new Set();
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+  function parseOutlookTime(date: any, timeStr: any) {
+    const result = new Date(date);
+    const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+    if (match) {
+      let hours = parseInt(match[1]);
+      const minutes = parseInt(match[2]);
+      const meridiem = match[3]?.toUpperCase();
+      if (meridiem === 'PM' && hours !== 12) hours += 12;
+      else if (meridiem === 'AM' && hours === 12) hours = 0;
+      result.setHours(hours, minutes, 0, 0);
+    }
+    return result;
+  }
+
+  function parseOutlookEventDescription(description: string) {
+    try {
+      if (description.toLowerCase().startsWith('canceled:')) return null;
+
+      const parts = description.split(', ');
+      if (parts.length < 4) return null;
+
+      const title = parts[0].trim();
+      if (!title) return null;
+
+      // Find time pattern: "HH:MM to HH:MM"
+      let timeStr = '';
+      let timePartIndex = -1;
+      for (let i = 1; i < parts.length; i++) {
+        if (parts[i].match(/^\d{1,2}:\d{2}\s+to\s+\d{1,2}:\d{2}$/)) {
+          timeStr = parts[i];
+          timePartIndex = i;
+          break;
+        }
+      }
+
+      // Find date pattern
+      let dateStr = '';
+      for (let i = timePartIndex + 1; i < parts.length; i++) {
+        const part = parts[i].trim();
+        if (days.includes(part) && i + 2 < parts.length) {
+          const monthDayPart = parts[i + 1]?.trim() || '';
+          const yearPart = parts[i + 2]?.trim() || '';
+          const monthMatch = monthDayPart.match(/^(\w+)\s+(\d{1,2})$/);
+          const yearMatch = yearPart.match(/^(\d{4})/);
+          if (monthMatch && yearMatch && months.includes(monthMatch[1])) {
+            dateStr = `${monthMatch[1]} ${monthMatch[2]}, ${yearMatch[1]}`;
+            break;
+          }
+        }
+      }
+
+      const isAllDay = description.toLowerCase().includes('all day');
+
+      if (!dateStr && !isAllDay) {
+        for (let i = 1; i < parts.length; i++) {
+          for (const month of months) {
+            if (parts[i].includes(month)) {
+              const match = parts[i].match(new RegExp(`(${month})\\s+(\\d{1,2})`));
+              if (match) {
+                const yearMatch = parts[i + 1]?.match(/^(\d{4})/);
+                if (yearMatch) {
+                  dateStr = `${match[1]} ${match[2]}, ${yearMatch[1]}`;
+                  break;
+                }
+              }
+            }
+          }
+          if (dateStr) break;
+        }
+      }
+
+      if (!dateStr) {
+        dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+      }
+
+      const eventDate = new Date(dateStr);
+      if (isNaN(eventDate.getTime())) return null;
+
+      let startTime, endTime;
+      if (timeStr) {
+        const timeMatch = timeStr.match(/(\d{1,2}:\d{2})\s+to\s+(\d{1,2}:\d{2})/);
+        if (timeMatch) {
+          startTime = parseOutlookTime(eventDate, timeMatch[1]);
+          endTime = parseOutlookTime(eventDate, timeMatch[2]);
+        }
+      }
+
+      if (!startTime) {
+        startTime = new Date(eventDate);
+        startTime.setHours(0, 0, 0, 0);
+        endTime = new Date(eventDate);
+        endTime.setHours(23, 59, 59, 999);
+      }
+
+      let rsvpStatus = '';
+      if (description.includes('Tentative')) rsvpStatus = 'tentative';
+      else if (description.includes('Busy')) rsvpStatus = 'accepted';
+      else if (description.includes('Free')) rsvpStatus = 'free';
+
+      return {
+        title,
+        startTime: startTime!.toISOString(),
+        endTime: endTime!.toISOString(),
+        isAllDay: isAllDay || !timeStr,
+        location: '',
+        rsvpStatus
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Scrape events from button aria-labels
+  const eventButtons = document.querySelectorAll('button[aria-label*="to"]');
+  for (const btn of eventButtons) {
+    const description = btn.getAttribute('aria-label') || '';
+    if (!description || description.length < 20) continue;
+
+    const event = parseOutlookEventDescription(description);
+    if (event && !seenEvents.has(event.title + event.startTime)) {
+      seenEvents.add(event.title + event.startTime);
+      events.push(event);
+    }
+  }
+
+  // Also try div elements with aria-label (Outlook uses both)
+  const eventDivs = document.querySelectorAll('div[aria-label*="to"]');
+  for (const div of eventDivs) {
+    const description = div.getAttribute('aria-label') || '';
+    if (!description || description.length < 20) continue;
+    if (!description.includes(',')) continue;
+
+    const event = parseOutlookEventDescription(description);
+    if (event && !seenEvents.has(event.title + event.startTime)) {
+      seenEvents.add(event.title + event.startTime);
+      events.push(event);
+    }
+  }
+
+  console.log('Outlook direct scraper found', events.length, 'events');
+  return { events, count: events.length, url: window.location.href };
+}
+
+function navigateOutlookNextWeek() {
+  const nextButton = document.querySelector('[aria-label*="Next"]') ||
+                     document.querySelector('[aria-label*="Forward"]') ||
+                     document.querySelector('button[title*="Next"]') ||
+                     document.querySelector('[data-icon-name="ChevronRight"]')?.closest('button');
+  if (nextButton) {
+    (nextButton as HTMLElement).click();
+    return { success: true };
+  }
+  return { success: false, error: 'Next button not found' };
+}
 
 console.log('Unified Calendar: Service worker initialized');

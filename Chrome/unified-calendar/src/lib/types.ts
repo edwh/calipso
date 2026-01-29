@@ -12,7 +12,8 @@ export function createMailboxConfig({
   name,
   email,
   accountIndex,
-  color = '#4285f4'
+  color = '#4285f4',
+  provider = 'gmail'
 }) {
   return {
     id,
@@ -20,6 +21,7 @@ export function createMailboxConfig({
     email,
     accountIndex,
     color,
+    provider, // 'gmail' | 'outlook'
     lastScanTimestamp: null,
     lastScannedEmailId: null,
     createdAt: new Date().toISOString()
@@ -150,17 +152,17 @@ export function createScanState({
 }
 
 /**
- * Default mailbox colors
+ * Default mailbox colors (no red/orange - look like errors/warnings)
  */
 export const MAILBOX_COLORS = [
-  '#4285f4', // Google Blue
-  '#34a853', // Google Green
-  '#ea4335', // Google Red
-  '#fbbc04', // Google Yellow
+  '#4285f4', // Blue
   '#9c27b0', // Purple
   '#00bcd4', // Cyan
-  '#ff9800', // Orange
-  '#795548'  // Brown
+  '#34a853', // Green
+  '#795548', // Brown
+  '#607d8b', // Blue Grey
+  '#e91e63', // Pink
+  '#3f51b5'  // Indigo
 ];
 
 /**

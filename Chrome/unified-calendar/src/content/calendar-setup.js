@@ -12,6 +12,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'NAVIGATE_NEXT_WEEK') {
+    navigateNextWeek().then(sendResponse);
+    return true;
+  }
+
   if (message.type === 'CHECK_CALENDAR_PAGE') {
     sendResponse({
       isCalendar: isCalendarPage(),
@@ -20,6 +25,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
+
+/**
+ * Navigate to next week by clicking the forward button
+ */
+async function navigateNextWeek() {
+  // Find the "next" navigation button
+  const nextButton = document.querySelector('[data-value="next"]') ||
+                     document.querySelector('button[aria-label*="Next"]') ||
+                     document.querySelector('button[aria-label*="Forward"]');
+
+  if (nextButton) {
+    nextButton.click();
+    // Wait for calendar to update
+    await new Promise(r => setTimeout(r, 2000));
+    return { success: true };
+  }
+
+  return { success: false, error: 'Next button not found' };
+}
 
 /**
  * Check if we're on a calendar view page

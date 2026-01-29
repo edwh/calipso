@@ -6,6 +6,8 @@
 let entries = [];
 let mailboxes = [];
 let weekStart = getWeekStart(new Date());
+let displayHourStart = 8;  // Default start hour (will be adjusted based on entries)
+let displayHourEnd = 18;   // Default end hour (will be adjusted based on entries)
 
 // DOM Elements
 const weekHeader = document.getElementById('week-header');
@@ -48,8 +50,44 @@ async function loadEntries() {
     end: weekEnd.toISOString()
   }) || [];
 
+  // Calculate hour range and rebuild calendar
+  calculateDisplayHours();
+  buildCalendarStructure();
   renderEntries();
   updateStats();
+}
+
+// Calculate display hour range based on entries
+function calculateDisplayHours() {
+  if (entries.length === 0) {
+    // Default: show 8 AM to 6 PM
+    displayHourStart = 8;
+    displayHourEnd = 18;
+    return;
+  }
+
+  let minHour = 23;
+  let maxHour = 0;
+
+  for (const entry of entries) {
+    const startDate = new Date(entry.startTime);
+    const endDate = new Date(entry.endTime);
+
+    const startHour = startDate.getHours();
+    const endHour = endDate.getHours() + (endDate.getMinutes() > 0 ? 1 : 0);
+
+    minHour = Math.min(minHour, startHour);
+    maxHour = Math.max(maxHour, endHour);
+  }
+
+  // Add 1 hour padding before and after, but stay within 0-24
+  displayHourStart = Math.max(0, minHour - 1);
+  displayHourEnd = Math.min(24, maxHour + 1);
+
+  // Ensure at least 3 hours displayed
+  if (displayHourEnd - displayHourStart < 3) {
+    displayHourEnd = Math.min(24, displayHourStart + 3);
+  }
 }
 
 // Build calendar grid structure
@@ -62,17 +100,28 @@ function buildCalendarStructure() {
     const isToday = isSameDay(date, new Date());
 
     headerHtml += `
-      <div class="week-header-cell ${isToday ? 'today' : ''}">
+      <div class="week-header-cell ${isToday ? 'today' : ''}" data-day-header="${i}">
         <div class="day-name">${getDayName(date)}</div>
         <div class="day-number">${date.getDate()}</div>
+        <div class="clash-badge" data-day-clash="${i}" style="display:none" title="Click to view clashes"></div>
       </div>
     `;
   }
   weekHeader.innerHTML = headerHtml;
 
-  // Build time column
+  // Add click handlers for clash badges
+  weekHeader.querySelectorAll('.clash-badge').forEach(badge => {
+    badge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dayIndex = parseInt(badge.dataset.dayClash);
+      showDayClashView(dayIndex);
+    });
+  });
+
+  // Build time column (only show hours with appointments +/- 1 hour padding)
+  const displayHours = displayHourEnd - displayHourStart;
   let timeHtml = '';
-  for (let hour = 0; hour < 24; hour++) {
+  for (let hour = displayHourStart; hour < displayHourEnd; hour++) {
     timeHtml += `<div class="time-slot">${formatHour(hour)}</div>`;
   }
   timeColumn.innerHTML = timeHtml;
@@ -81,10 +130,10 @@ function buildCalendarStructure() {
   let gridHtml = '<div class="time-column" id="time-column">' + timeHtml + '</div>';
   for (let i = 0; i < 7; i++) {
     let hourLines = '';
-    for (let hour = 0; hour < 24; hour++) {
-      hourLines += `<div class="hour-line" style="top: ${hour * 48}px"></div>`;
+    for (let h = 0; h < displayHours; h++) {
+      hourLines += `<div class="hour-line" style="top: ${h * 48}px"></div>`;
     }
-    gridHtml += `<div class="day-column" data-day="${i}">${hourLines}</div>`;
+    gridHtml += `<div class="day-column" data-day="${i}" style="min-height: ${displayHours * 48}px">${hourLines}</div>`;
   }
   weekGrid.innerHTML = gridHtml;
 }
@@ -109,7 +158,7 @@ function renderEntries() {
     }
   }
 
-  // Render each day's entries
+  // Render each day's entries and count clashes
   entriesByDay.forEach((dayEntries, dayIndex) => {
     const column = weekGrid.querySelector(`[data-day="${dayIndex}"]`);
     if (!column) return;
@@ -119,6 +168,130 @@ function renderEntries() {
       column.appendChild(element);
     }
   });
+
+  // Update clash badges
+  updateClashBadges(entriesByDay);
+}
+
+// Update clash count badges in headers
+function updateClashBadges(entriesByDay) {
+  for (let i = 0; i < 7; i++) {
+    const dayEntries = entriesByDay.get(i) || [];
+    const clashCount = countClashesForDay(dayEntries);
+    const badge = document.querySelector(`[data-day-clash="${i}"]`);
+
+    if (badge) {
+      if (clashCount > 0) {
+        badge.textContent = `${clashCount} clash${clashCount > 1 ? 'es' : ''}`;
+        badge.style.display = 'block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
+}
+
+// Count unique clashing events for a day
+function countClashesForDay(dayEntries) {
+  let clashCount = 0;
+  const counted = new Set();
+
+  for (const entry of dayEntries) {
+    if (entry.conflicts?.length > 0 && !counted.has(entry.id)) {
+      clashCount++;
+      counted.add(entry.id);
+      // Don't double-count the conflicting entries
+      entry.conflicts.forEach(cid => counted.add(cid));
+    }
+  }
+
+  return clashCount;
+}
+
+// Show day view with clashes
+function showDayClashView(dayIndex) {
+  const date = new Date(weekStart);
+  date.setDate(date.getDate() + dayIndex);
+
+  const dayEntries = entries.filter(entry => {
+    const entryDate = new Date(entry.startTime);
+    return getDayIndex(entryDate) === dayIndex;
+  });
+
+  // Sort by start time
+  dayEntries.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+  // Find clashing entries
+  const clashingIds = new Set();
+  for (const entry of dayEntries) {
+    if (entry.conflicts?.length > 0) {
+      clashingIds.add(entry.id);
+      entry.conflicts.forEach(cid => clashingIds.add(cid));
+    }
+  }
+
+  const dateStr = date.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  });
+
+  modalTitle.textContent = `${dateStr} - Clashes`;
+
+  let content = '<div class="day-clash-view">';
+
+  if (clashingIds.size === 0) {
+    content += '<p>No clashes for this day.</p>';
+  } else {
+    // Group clashing events
+    const clashGroups = [];
+    const processed = new Set();
+
+    for (const entry of dayEntries) {
+      if (clashingIds.has(entry.id) && !processed.has(entry.id)) {
+        const group = [entry];
+        processed.add(entry.id);
+
+        // Find all entries this one conflicts with
+        for (const otherId of (entry.conflicts || [])) {
+          const other = dayEntries.find(e => e.id === otherId);
+          if (other && !processed.has(other.id)) {
+            group.push(other);
+            processed.add(other.id);
+          }
+        }
+
+        if (group.length > 1) {
+          clashGroups.push(group);
+        }
+      }
+    }
+
+    for (const group of clashGroups) {
+      content += '<div class="clash-group">';
+      content += '<div class="clash-group-header">Overlapping events:</div>';
+
+      for (const entry of group) {
+        const mailbox = mailboxes.find(m => m.id === entry.mailboxId);
+        const startTime = formatTime(new Date(entry.startTime));
+        const endTime = formatTime(new Date(entry.endTime));
+
+        content += `
+          <div class="clash-event" style="border-left: 4px solid ${mailbox?.color || '#4285f4'}">
+            <div class="clash-event-time">${startTime} - ${endTime}</div>
+            <div class="clash-event-title">${escapeHtml(entry.title)}</div>
+            <div class="clash-event-source">${mailbox?.name || 'Unknown'} (${entry.status})</div>
+          </div>
+        `;
+      }
+
+      content += '</div>';
+    }
+  }
+
+  content += '</div>';
+  modalContent.innerHTML = content;
+  modalOverlay.classList.add('active');
 }
 
 // Create entry DOM element
@@ -130,7 +303,9 @@ function createEntryElement(entry, isNew = false) {
   const endMinutes = endDate.getHours() * 60 + endDate.getMinutes();
   const duration = Math.max(endMinutes - startMinutes, 30);
 
-  const top = (startMinutes / 60) * 48;
+  // Offset by displayHourStart to account for trimmed hours
+  const offsetMinutes = displayHourStart * 60;
+  const top = ((startMinutes - offsetMinutes) / 60) * 48;
   const height = (duration / 60) * 48;
 
   const mailbox = mailboxes.find(m => m.id === entry.mailboxId);
@@ -143,9 +318,8 @@ function createEntryElement(entry, isNew = false) {
 
   el.style.top = `${top}px`;
   el.style.height = `${Math.max(height, 24)}px`;
-  el.style.backgroundColor = hexToRgba(color, entry.status === 'tentative' ? 0.7 : 0.9);
   el.style.borderColor = color;
-  el.style.color = getContrastColor(color);
+  el.style.color = '#202124';
 
   el.innerHTML = `
     <div class="entry-title">${escapeHtml(entry.title)}</div>
@@ -187,12 +361,26 @@ function addNewEntry(entry) {
 
 // Update statistics
 function updateStats() {
-  const confirmed = entries.filter(e => e.status === 'confirmed').length;
-  const tentative = entries.filter(e => e.status === 'tentative').length;
+  const confirmed = entries.filter(e => e.status === 'confirmed');
+  const tentative = entries.filter(e => e.status === 'tentative');
   const conflicts = entries.filter(e => e.conflicts?.length > 0).length;
 
-  statConfirmed.textContent = confirmed;
-  statTentative.textContent = tentative;
+  // Build per-mailbox breakdown for confirmed events
+  const perMailbox = {};
+  for (const entry of confirmed) {
+    const mb = mailboxes.find(m => m.id === entry.mailboxId);
+    const name = mb?.name || 'Unknown';
+    perMailbox[name] = (perMailbox[name] || 0) + 1;
+  }
+
+  const breakdown = Object.entries(perMailbox)
+    .map(([name, count]) => `${count} ${name}`)
+    .join(', ');
+
+  // Update display
+  statConfirmed.innerHTML = confirmed.length +
+    (breakdown ? `<div style="font-size:11px;color:#5f6368;font-weight:normal">${breakdown}</div>` : '');
+  statTentative.textContent = tentative.length;
   statConflicts.textContent = conflicts;
 }
 
@@ -338,18 +526,27 @@ modalOverlay.addEventListener('click', (e) => {
 
 // Refresh button
 document.getElementById('btn-refresh').addEventListener('click', async () => {
-  await loadEntries();
+  const btn = document.getElementById('btn-refresh');
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span> Loading...';
+  btn.disabled = true;
+
+  try {
+    // Recalculate week start from current date
+    weekStart = getWeekStart(new Date());
+    await loadEntries();
+  } finally {
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+  }
 });
 
 // ============ Utility Functions ============
 
 function getWeekStart(date) {
   const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday start
-  d.setDate(diff);
   d.setHours(0, 0, 0, 0);
-  return d;
+  return d; // Start from current date, show next 7 days
 }
 
 function getDayIndex(date) {

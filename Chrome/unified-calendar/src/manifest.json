@@ -9,11 +9,15 @@
     "tabs",
     "activeTab",
     "notifications",
-    "downloads"
+    "downloads",
+    "scripting"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://calendar.google.com/*"
+    "https://calendar.google.com/*",
+    "https://outlook.live.com/*",
+    "https://outlook.office.com/*",
+    "https://outlook.office365.com/*"
   ],
   "background": {
     "service_worker": "background/service-worker.ts",
@@ -37,6 +41,15 @@
     {
       "matches": ["https://calendar.google.com/*"],
       "js": ["content/calendar-setup.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://outlook.live.com/*",
+        "https://outlook.office.com/*",
+        "https://outlook.office365.com/*"
+      ],
+      "js": ["content/outlook-calendar-adapter.js"],
       "run_at": "document_idle"
     }
   ],

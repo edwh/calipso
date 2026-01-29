@@ -35,8 +35,8 @@ const keywordsInput = document.getElementById('keywords-input');
 const btnSaveKeywords = document.getElementById('btn-save-keywords');
 const btnResetKeywords = document.getElementById('btn-reset-keywords');
 
-// Store current Gmail info
-let currentGmailInfo = null;
+// Store current mailbox info (Gmail or Outlook)
+let currentMailboxInfo = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -55,16 +55,19 @@ async function loadMailboxes() {
     return;
   }
 
-  mailboxList.innerHTML = mailboxes.map(mb => `
-    <div class="mailbox-item" data-id="${mb.id}">
-      <div class="mailbox-color" style="background: ${mb.color}"></div>
+  mailboxList.innerHTML = mailboxes.map(mb => {
+    const providerIcon = mb.provider === 'outlook' ? '📧' : '📬';
+    const providerLabel = mb.provider === 'outlook' ? 'Outlook' : 'Gmail';
+    return `
+    <div class="mailbox-item" data-id="${mb.id}" style="border-left-color: ${mb.color}">
       <div class="mailbox-info">
-        <div class="mailbox-name">${escapeHtml(mb.name)}</div>
-        <div class="mailbox-email">${escapeHtml(mb.email)}</div>
+        <div class="mailbox-name">${providerIcon} ${escapeHtml(mb.name)}</div>
+        <div class="mailbox-email">${escapeHtml(mb.email)} <span style="opacity:0.6;font-size:10px">(${providerLabel})</span></div>
       </div>
       <button class="btn-edit-mailbox" data-id="${mb.id}" style="background:none;border:none;cursor:pointer;font-size:16px" title="Edit">✏️</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   // Add edit handlers
   mailboxList.querySelectorAll('.btn-edit-mailbox').forEach(btn => {
@@ -75,16 +78,23 @@ async function loadMailboxes() {
   });
 }
 
-// Check if we're on a Gmail page
+// Check if we're on a Gmail or Outlook page
 async function checkCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const url = tab?.url || '';
 
-  if (tab?.url?.includes('mail.google.com')) {
-    btnAdd.textContent = '+ Add This Mailbox';
+  if (url.includes('mail.google.com')) {
+    btnAdd.textContent = '+ Add This Gmail Mailbox';
     btnAdd.disabled = false;
+    currentMailboxInfo = { provider: 'gmail', url };
+  } else if (url.includes('outlook.live.com') || url.includes('outlook.office.com') || url.includes('outlook.office365.com')) {
+    btnAdd.textContent = '+ Add This Outlook Mailbox';
+    btnAdd.disabled = false;
+    currentMailboxInfo = { provider: 'outlook', url };
   } else {
-    btnAdd.textContent = '+ Add Mailbox (Go to Gmail first)';
+    btnAdd.textContent = '+ Add Mailbox (Go to Gmail or Outlook)';
     btnAdd.disabled = true;
+    currentMailboxInfo = null;
   }
 }
 
@@ -169,7 +179,7 @@ function hideAddForm() {
   btnAdd.style.display = 'flex';
   mailboxEmailInput.value = '';
   mailboxNameInput.value = '';
-  currentGmailInfo = null;
+  currentMailboxInfo = null;
   editingMailboxId = null;
   btnSaveMailbox.textContent = 'Save Mailbox';
 }
@@ -190,22 +200,31 @@ function editMailbox(id, mb) {
 // Button handlers
 btnAdd.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const url = tab?.url || '';
 
-  if (!tab?.url?.includes('mail.google.com')) {
-    showStatus('Please navigate to Gmail first', 'error');
+  const isGmail = url.includes('mail.google.com');
+  const isOutlook = url.includes('outlook.live.com') || url.includes('outlook.office.com') || url.includes('outlook.office365.com');
+
+  if (!isGmail && !isOutlook) {
+    showStatus('Please navigate to Gmail or Outlook first', 'error');
     return;
   }
 
   // Get account info from content script
   try {
-    currentGmailInfo = await chrome.tabs.sendMessage(tab.id, { type: 'GET_GMAIL_INFO' });
+    if (isGmail) {
+      const gmailInfo = await chrome.tabs.sendMessage(tab.id, { type: 'GET_GMAIL_INFO' });
+      currentMailboxInfo = { ...gmailInfo, provider: 'gmail' };
+    } else if (isOutlook) {
+      try {
+        const outlookInfo = await chrome.tabs.sendMessage(tab.id, { type: 'GET_OUTLOOK_INFO' });
+        currentMailboxInfo = { ...outlookInfo, provider: 'outlook', accountIndex: 0 };
+      } catch (e) {
+        currentMailboxInfo = { provider: 'outlook', accountIndex: 0 };
+      }
+    }
   } catch (e) {
-    currentGmailInfo = { isGmail: true, accountIndex: 0 };
-  }
-
-  if (!currentGmailInfo?.isGmail) {
-    showStatus('Could not detect Gmail page', 'error');
-    return;
+    currentMailboxInfo = { provider: isGmail ? 'gmail' : 'outlook', accountIndex: 0 };
   }
 
   // Show the inline form
@@ -240,14 +259,16 @@ btnSaveMailbox.addEventListener('click', async () => {
     return;
   }
 
-  // Add new mailbox
+  // Add new mailbox with unique color
+  const nextColor = await getNextColor();
   const mailbox = await chrome.runtime.sendMessage({
     type: 'ADD_MAILBOX',
     mailbox: {
       name,
       email,
-      accountIndex: currentGmailInfo?.accountIndex || 0,
-      color: getRandomColor()
+      accountIndex: currentMailboxInfo?.accountIndex || 0,
+      provider: currentMailboxInfo?.provider || 'gmail',
+      color: nextColor
     }
   });
 
@@ -408,7 +429,24 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function getRandomColor() {
-  const colors = ['#4285f4', '#34a853', '#ea4335', '#fbbc04', '#9c27b0', '#00bcd4'];
-  return colors[Math.floor(Math.random() * colors.length)];
+// Mailbox colors (no red/orange - look like errors/warnings)
+const MAILBOX_COLORS = [
+  '#4285f4', // Blue
+  '#9c27b0', // Purple
+  '#00bcd4', // Cyan
+  '#34a853', // Green
+  '#795548', // Brown
+  '#607d8b', // Blue Grey
+  '#e91e63', // Pink
+  '#3f51b5'  // Indigo
+];
+
+async function getNextColor() {
+  const mailboxes = await chrome.runtime.sendMessage({ type: 'GET_MAILBOXES' }) || [];
+  const usedColors = new Set(mailboxes.map(m => m.color));
+  for (const color of MAILBOX_COLORS) {
+    if (!usedColors.has(color)) return color;
+  }
+  // All colors used, pick one that's least used
+  return MAILBOX_COLORS[mailboxes.length % MAILBOX_COLORS.length];
 }
