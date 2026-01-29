@@ -88,6 +88,48 @@ async function initLLM(): Promise<{ ready?: boolean; initializing?: boolean; err
   }
 }
 
+async function verifyExtraction(parsed: any): Promise<any | null> {
+  if (!llmReady || !llmEngine) return null;
+
+  const verifyPrompt = `Given this text: "${parsed.dateSource}"
+
+What is the START date of the event? Look for "Check-in", "begins", "starts", or the first date mentioned.
+What is the END date? Look for "Check-out", "ends", or the last date mentioned.
+
+Current extraction says start=${parsed.date}, end=${parsed.endDate || 'same'}
+
+Example: "Check-in: Wednesday 8 January 2026" → start date is 2026-01-08
+
+Respond with JSON only:
+{"date": "YYYY-MM-DD", "endDate": "YYYY-MM-DD"}`;
+
+  try {
+    const response = await llmEngine.chat.completions.create({
+      messages: [
+        { role: 'system', content: 'You verify date extractions. Output JSON only.' },
+        { role: 'user', content: verifyPrompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 100
+    });
+
+    const result = response.choices[0]?.message?.content || '';
+    console.log('Verification raw response:', result);
+    const objMatch = result.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      const verified = JSON.parse(objMatch[0]);
+      if (verified.date && verified.date !== parsed.date) {
+        console.log('Verification corrected date:', parsed.date, '→', verified.date);
+        return { date: verified.date, endDate: verified.endDate || parsed.endDate };
+      }
+      console.log('Verification confirmed:', parsed.date);
+    }
+  } catch (e: any) {
+    console.log('Verification failed:', e.message);
+  }
+  return null;
+}
+
 async function analyzeEmailWithLLM(email: Email): Promise<MeetingAnalysis | null> {
   if (!llmReady || !llmEngine) {
     return null;
@@ -105,8 +147,10 @@ If this email discusses a specific meeting, appointment, or scheduled event, res
   "isMeeting": true,
   "title": "event title",
   "date": "YYYY-MM-DD",
+  "dateSource": "the exact text that specified the date",
   "endDate": "YYYY-MM-DD",
   "time": "HH:MM",
+  "timeSource": "the exact text that specified the time",
   "duration": 60,
   "confidence": "high|medium|low"
 }
@@ -115,9 +159,12 @@ If NOT about a specific scheduled event, respond with:
 {"isMeeting": false}
 
 Important:
-- Only mark as meeting if there's a SPECIFIC date mentioned or clearly implied
-- For multi-day events (e.g., "Jan 8-11", "January 8th/11th"), set date to start and endDate to end
+- Only mark as meeting if there's a SPECIFIC date mentioned. You MUST provide "dateSource" with the exact quote from the email.
+- PREFER clear date formats in the snippet/body over ambiguous ones in the subject
+- For multi-day events (e.g., "January 8th/11th" means 8th to 11th), set date to start and endDate to end
+- Date ranges like "8/11" or "8th/11th" mean from the 8th TO the 11th, not a single date
 - For single-day events, omit endDate or set it same as date
+- CRITICAL: Only include "time" if there's an explicit time in the text. You MUST provide "timeSource" with the exact quote. If you can't quote a time, omit both "time" and "timeSource".
 - Interpret relative dates (e.g., "next Wednesday") relative to the email date
 - Generic mentions of "let's meet sometime" without a specific time are NOT meetings
 - Bookings, reservations, scheduled calls, appointments, deliveries ARE events
@@ -141,14 +188,68 @@ Important:
     if (jsonMatch) jsonStr = jsonMatch[1];
 
     try {
-      return JSON.parse(jsonStr.trim());
+      const parsed = JSON.parse(jsonStr.trim());
+
+      // Validate sources - if they don't exist in the email, LLM is hallucinating
+      const emailText = `${email.subject} ${email.snippet}`.toLowerCase();
+
+      // Validate timeSource - must contain actual time pattern and exist in email
+      if (parsed.timeSource) {
+        const timeSourceLower = parsed.timeSource.toLowerCase();
+        const hasTimePattern = /\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|at\s+\d{1,2}/.test(timeSourceLower);
+        const sourceInEmail = emailText.includes(timeSourceLower.substring(0, 20));
+        if (!hasTimePattern || !sourceInEmail || timeSourceLower === 'hh:mm') {
+          console.log('Removing hallucinated time:', parsed.time, 'source:', parsed.timeSource);
+          delete parsed.time;
+          delete parsed.timeSource;
+          delete parsed.duration;
+        }
+      }
+      // Remove time without valid source
+      if (parsed.time && !parsed.timeSource) {
+        delete parsed.time;
+        delete parsed.duration;
+      }
+
+      // Validate dateSource - must exist in email, not be template text
+      if (parsed.dateSource) {
+        const dateSourceLower = parsed.dateSource.toLowerCase();
+        const isTemplate = dateSourceLower === 'event title' || dateSourceLower.includes('yyyy');
+        const sourceInEmail = emailText.includes(dateSourceLower.substring(0, 15)) ||
+                              email.snippet?.toLowerCase().includes(dateSourceLower.substring(0, 15));
+        if (isTemplate || (!sourceInEmail && dateSourceLower.length < 50)) {
+          console.log('Removing hallucinated date:', parsed.date, 'source:', parsed.dateSource);
+          delete parsed.date;
+          delete parsed.dateSource;
+          delete parsed.endDate;
+        }
+      }
+
+      // Remove orphaned endDate if no date
+      if (parsed.endDate && !parsed.date) {
+        console.log('Removing orphaned endDate:', parsed.endDate);
+        delete parsed.endDate;
+      }
+
+      // Second pass: verify extracted dates against source text
+      if (parsed.date && parsed.dateSource && parsed.isMeeting) {
+        const verified = await verifyExtraction(parsed);
+        if (verified) {
+          Object.assign(parsed, verified);
+        }
+      }
+
+      console.log('LLM analysis for:', email.subject, '→', JSON.stringify(parsed));
+      return parsed;
     } catch (e) {
       // Try to extract JSON object from the text
       const objMatch = result.match(/\{[\s\S]*\}/);
       if (objMatch) {
-        return JSON.parse(objMatch[0]);
+        const parsed = JSON.parse(objMatch[0]);
+        console.log('LLM analysis for:', email.subject, '→', JSON.stringify(parsed));
+        return parsed;
       }
-      console.warn('Failed to parse LLM response:', result);
+      console.warn('Failed to parse LLM response for:', email.subject, '- Raw:', result);
       return null;
     }
   } catch (error: any) {
@@ -208,6 +309,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
     case 'GET_LLM_STATUS':
       return { ready: llmReady, initializing: llmInitializing };
+
+    case 'TEST_LLM':
+      // Test LLM on a specific email
+      if (!llmReady) {
+        return { error: 'LLM not loaded' };
+      }
+      const testResult = await analyzeEmailWithLLM(message.email);
+      return { result: testResult };
 
     case 'OPEN_CALENDAR_VIEW':
       return openCalendarView();
