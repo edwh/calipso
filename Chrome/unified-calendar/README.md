@@ -193,10 +193,26 @@ npm run watch
 4. Optionally add your private iCal URL for more accurate calendar data
 
 ### Getting Your iCal URL
+
+Google Calendar offers two types of iCal URL:
+
+**Personal Google accounts** typically show a "Secret address in iCal format" in Calendar Settings → (your calendar) → Integrate calendar. This URL contains an unguessable token and provides full event details without making your calendar public.
+
+**Google Workspace accounts** may not show the secret address (depends on admin policy). In this case you have two options:
+
+1. **Public iCal URL** (Settings → Integrate calendar → "Public address in iCal format"):
+   - Requires enabling "Make available to public" in Access permissions
+   - By default only exposes free/busy information (events show as "Busy")
+   - To get full details, change the public access dropdown to "See all event details"
+   - See **Security: Public Calendar Access** below
+
+2. **Web scraping fallback**: If no iCal URL is configured, the extension falls back to scraping the Google Calendar web UI, which shows full event details for the logged-in user.
+
+To add an iCal URL:
 1. Go to Google Calendar Settings
-2. Select your calendar
-3. Scroll to "Secret address in iCal format"
-4. Copy the URL and paste into the extension
+2. Select your calendar → "Integrate calendar"
+3. Copy the secret or public iCal address
+4. Paste into the "Private iCal URL" field in the extension popup
 
 ### Loading the AI Model
 1. Click "Load Model" in the extension popup
@@ -209,6 +225,16 @@ npm run watch
 - **No telemetry**: No usage data is collected
 - **Data stays local**: Calendar and email data only stored in browser IndexedDB
 - **iCal URLs are secrets**: Treat your private iCal URL like a password
+
+### Security: Public Calendar Access
+
+If you use the **public iCal URL** (because your Workspace admin doesn't expose the secret address), be aware of the following:
+
+- **Making a calendar public** means anyone on the internet can view it via the public URL. The URL contains your email address (e.g. `https://calendar.google.com/calendar/ical/you%40example.com/public/basic.ics`) so it is guessable - there is **no security through obscurity**.
+- **Default public access is free/busy only**: Google defaults to "See only free/busy (hide details)", which means the public iCal feed will only show time slots as "Busy" without event titles, descriptions, or attendees.
+- **Changing to "See all event details"** exposes full event information (titles, locations, descriptions, attendees) to anyone who requests the public URL. This may leak sensitive meeting information.
+- **The secret iCal URL** (available on personal Google accounts) contains a long random token that is not guessable. This is the safer option when available.
+- **Recommendation**: If privacy is a concern, leave the iCal URL blank and rely on the web scraping fallback, which accesses calendar data through your authenticated browser session without making anything public.
 
 ## Limitations
 
