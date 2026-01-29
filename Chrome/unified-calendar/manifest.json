@@ -19,7 +19,7 @@
     "service_worker": "dist/service-worker.ddaa36d2.js"
   },
   "action": {
-    "default_popup": "dist/popup.af6529f9.html",
+    "default_popup": "dist/popup.5a194b6a.html",
     "default_icon": {
       "16": "dist/icon16.699bb42f.png",
       "32": "dist/icon32.46fd2050.png",

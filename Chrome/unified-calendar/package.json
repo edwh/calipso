@@ -4,8 +4,8 @@
   "description": "Unified calendar Chrome extension with privacy-safe meeting detection",
   "type": "module",
   "scripts": {
-    "build": "parcel build src/manifest.json --config @parcel/config-webextension --no-cache --public-url ./",
-    "watch": "parcel watch src/manifest.json --config @parcel/config-webextension --public-url ./",
+    "build": "parcel build src/manifest.json --config @parcel/config-webextension --no-cache --public-url /",
+    "watch": "parcel watch src/manifest.json --config @parcel/config-webextension --public-url /",
     "clean": "rm -rf dist .parcel-cache"
   },
   "dependencies": {
