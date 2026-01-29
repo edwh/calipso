@@ -226,6 +226,16 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 // ============ Mailbox Management ============
 
 async function addMailbox(mailboxData: any) {
+  // Prevent duplicate emails
+  const existing = await storage.getAllMailboxes();
+  const duplicate = existing.find((mb: any) => mb.email === mailboxData.email);
+  if (duplicate) {
+    // Update existing mailbox instead of creating a duplicate
+    const updated = { ...duplicate, ...mailboxData, id: duplicate.id };
+    await storage.saveMailbox(updated);
+    return updated;
+  }
+
   const mailbox = {
     id: `mailbox-${Date.now()}`,
     ...mailboxData,
@@ -764,5 +774,24 @@ chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) =
     openCalendarView();
   }
 });
+
+// Deduplicate mailboxes on startup (clean up from previous bugs)
+(async () => {
+  const mailboxes = await storage.getAllMailboxes();
+  const seen = new Map<string, any>();
+  for (const mb of mailboxes) {
+    if (seen.has(mb.email)) {
+      // Keep the newer one, delete the older
+      const existing = seen.get(mb.email);
+      const keep = mb.createdAt > existing.createdAt ? mb : existing;
+      const remove = mb.createdAt > existing.createdAt ? existing : mb;
+      await storage.deleteMailbox(remove.id);
+      seen.set(mb.email, keep);
+      console.log(`Unified Calendar: Removed duplicate mailbox for ${mb.email}`);
+    } else {
+      seen.set(mb.email, mb);
+    }
+  }
+})();
 
 console.log('Unified Calendar: Service worker initialized');

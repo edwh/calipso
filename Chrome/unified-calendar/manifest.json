@@ -16,7 +16,7 @@
     "https://calendar.google.com/*"
   ],
   "background": {
-    "service_worker": "dist/service-worker.ddaa36d2.js"
+    "service_worker": "dist/service-worker.8a9a69af.js"
   },
   "action": {
     "default_popup": "dist/popup.5a194b6a.html",
