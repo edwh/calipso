@@ -739,10 +739,38 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
           }
         }
 
+        // Self-email with date pattern detection (reminders to self)
+        if (!meetingInfo) {
+          const isSelfEmail = email.from?.toLowerCase().includes(mailbox.email.toLowerCase());
+          if (isSelfEmail) {
+            // Look for date patterns in subject
+            const datePatterns = [
+              /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i,  // "Feb 2", "January 15"
+              /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b/i,  // "2 Feb", "15 January"
+              /\b\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?\b/,  // "2/15", "15-02-2026"
+              /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,  // Day names
+              /\b(tomorrow|next\s+week|this\s+week)\b/i  // Relative dates
+            ];
+            const hasDate = datePatterns.some(pattern => pattern.test(email.subject));
+            if (hasDate) {
+              // Extract the date from subject and try to parse it
+              const extractedDate = extractDateFromText(email.subject, email.parsedDate);
+              meetingInfo = {
+                isMeeting: true,
+                title: email.subject,
+                date: extractedDate?.dateStr,
+                confidence: 'medium'
+              };
+            }
+          }
+        }
+
         if (meetingInfo?.isMeeting) {
           const emailDate = email.parsedDate ? new Date(email.parsedDate) : new Date();
 
           let startTime: Date, endTime: Date;
+          let isAllDay = false;
+
           if (meetingInfo.date && meetingInfo.time) {
             // LLM extracted specific date/time
             const [year, month, day] = meetingInfo.date.split('-').map(Number);
@@ -750,6 +778,12 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
             startTime = new Date(year, month - 1, day, hour, minute);
             const duration = meetingInfo.duration || 60;
             endTime = new Date(startTime.getTime() + duration * 60 * 1000);
+          } else if (meetingInfo.date) {
+            // Date extracted but no time - create all-day event
+            const [year, month, day] = meetingInfo.date.split('-').map(Number);
+            startTime = new Date(year, month - 1, day, 9, 0); // Default to 9 AM
+            endTime = new Date(year, month - 1, day, 10, 0);  // 1 hour default
+            isAllDay = true;
           } else {
             // Fallback: use email date
             startTime = new Date(emailDate);
@@ -762,6 +796,7 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
             title: meetingInfo.title || email.subject,
             startTime: startTime.toISOString(),
             endTime: endTime.toISOString(),
+            isAllDay: isAllDay,
             status: 'tentative',
             source: {
               type: 'email',
@@ -905,6 +940,54 @@ async function openCalendarView() {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Extract date from text like "Feb 2", "on January 15", "next Monday"
+function extractDateFromText(text: string, emailDate?: string): { dateStr: string } | null {
+  const baseDate = emailDate ? new Date(emailDate) : new Date();
+  const currentYear = baseDate.getFullYear();
+
+  const months: { [key: string]: number } = {
+    jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
+    apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+    aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9,
+    nov: 10, november: 10, dec: 11, december: 11
+  };
+
+  // Try "Month Day" pattern (Feb 2, January 15)
+  const monthDayMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b/i);
+  if (monthDayMatch) {
+    const month = months[monthDayMatch[1].toLowerCase().substring(0, 3)];
+    const day = parseInt(monthDayMatch[2]);
+    if (month !== undefined && day >= 1 && day <= 31) {
+      let year = currentYear;
+      // If the date has passed this year, assume next year
+      const testDate = new Date(year, month, day);
+      if (testDate < baseDate) {
+        year++;
+      }
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      return { dateStr };
+    }
+  }
+
+  // Try "Day Month" pattern (2 Feb, 15 January)
+  const dayMonthMatch = text.match(/\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\b/i);
+  if (dayMonthMatch) {
+    const day = parseInt(dayMonthMatch[1]);
+    const month = months[dayMonthMatch[2].toLowerCase().substring(0, 3)];
+    if (month !== undefined && day >= 1 && day <= 31) {
+      let year = currentYear;
+      const testDate = new Date(year, month, day);
+      if (testDate < baseDate) {
+        year++;
+      }
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      return { dateStr };
+    }
+  }
+
+  return null;
 }
 
 function waitForTabLoad(tabId: number, timeout = 15000): Promise<void> {
