@@ -44,6 +44,49 @@
       align-items: center;
     }
 
+    .llm-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #5f6368;
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid #e8eaed;
+      background: #f8f9fa;
+    }
+
+    .llm-status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #dadce0;
+    }
+
+    .llm-status.ready .dot { background: #34a853; }
+    .llm-status.loading .dot {
+      background: #fbbc04;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    .llm-status.error .dot { background: #d93025; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .btn-small {
+      padding: 4px 10px;
+      border: 1px solid #4285f4;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      background: white;
+      color: #4285f4;
+    }
+
+    .btn-small:hover { background: #e8f0fe; }
+
     .btn {
       padding: 8px 16px;
       border: none;
@@ -533,6 +576,11 @@
       Unified Calendar
     </h1>
     <div class="header-actions">
+      <div id="llm-status" class="llm-status">
+        <span class="dot"></span>
+        <span id="llm-status-text">LLM: Checking...</span>
+        <button id="btn-load-llm" class="btn-small" style="display:none;">Load</button>
+      </div>
       <button id="btn-refresh" class="btn btn-primary">
         <span>🔄</span> Refresh
       </button>

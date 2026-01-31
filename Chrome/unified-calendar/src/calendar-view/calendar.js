@@ -26,12 +26,51 @@ const statConfirmed = document.getElementById('stat-confirmed');
 const statTentative = document.getElementById('stat-tentative');
 const statConflicts = document.getElementById('stat-conflicts');
 
+// LLM Status elements
+const llmStatusEl = document.getElementById('llm-status');
+const llmStatusText = document.getElementById('llm-status-text');
+const btnLoadLlm = document.getElementById('btn-load-llm');
+
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
   await loadMailboxes();
   buildCalendarStructure();
   await loadEntries();
   checkScanStatus();
+  checkLlmStatus();
+});
+
+// LLM status check
+async function checkLlmStatus() {
+  const status = await chrome.runtime.sendMessage({ type: 'GET_LLM_STATUS' });
+  if (status?.ready) {
+    llmStatusEl.className = 'llm-status ready';
+    llmStatusText.textContent = 'LLM: Ready';
+    btnLoadLlm.style.display = 'none';
+  } else if (status?.initializing) {
+    llmStatusEl.className = 'llm-status loading';
+    llmStatusText.textContent = 'LLM: Loading...';
+    btnLoadLlm.style.display = 'none';
+    setTimeout(checkLlmStatus, 2000);
+  } else {
+    llmStatusEl.className = 'llm-status error';
+    llmStatusText.textContent = 'LLM: Not loaded';
+    btnLoadLlm.style.display = '';
+  }
+}
+
+btnLoadLlm.addEventListener('click', async () => {
+  llmStatusEl.className = 'llm-status loading';
+  llmStatusText.textContent = 'LLM: Loading...';
+  btnLoadLlm.style.display = 'none';
+  const result = await chrome.runtime.sendMessage({ type: 'INIT_LLM' });
+  if (result?.error) {
+    llmStatusEl.className = 'llm-status error';
+    llmStatusText.textContent = 'LLM: ' + result.error.substring(0, 40);
+    btnLoadLlm.style.display = '';
+  } else {
+    checkLlmStatus();
+  }
 });
 
 // Load mailboxes for color mapping
@@ -575,6 +614,14 @@ chrome.runtime.onMessage.addListener((message) => {
 
   if (message.type === 'NEW_ENTRY') {
     addNewEntry(message.entry);
+  }
+
+  if (message.type === 'LLM_INIT_PROGRESS') {
+    const pct = message.progress?.progress;
+    const text = message.progress?.text || '';
+    llmStatusEl.className = 'llm-status loading';
+    llmStatusText.textContent = pct != null ? `LLM: ${Math.round(pct * 100)}%` : 'LLM: Loading...';
+    btnLoadLlm.style.display = 'none';
   }
 });
 

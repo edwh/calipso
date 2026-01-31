@@ -195,6 +195,16 @@ Important:
 
       // Validate timeSource - must contain actual time pattern and exist in email
       if (parsed.timeSource) {
+        // Strip prompt echo patterns from timeSource
+        let cleanedTimeSource = parsed.timeSource
+          .replace(/^the exact text that specified the time:\s*/i, '')
+          .replace(/^exact text:\s*/i, '')
+          .replace(/^time source:\s*/i, '')
+          .trim();
+        if (cleanedTimeSource && cleanedTimeSource !== parsed.timeSource) {
+          console.log('Cleaned timeSource echo:', parsed.timeSource, '→', cleanedTimeSource);
+          parsed.timeSource = cleanedTimeSource;
+        }
         const timeSourceLower = parsed.timeSource.toLowerCase();
         const hasTimePattern = /\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|at\s+\d{1,2}/.test(timeSourceLower);
         const sourceInEmail = emailText.includes(timeSourceLower.substring(0, 20));
@@ -213,6 +223,17 @@ Important:
 
       // Validate dateSource - must exist in email, not be template text
       if (parsed.dateSource) {
+        // Strip prompt echo patterns from dateSource (LLM sometimes echoes instructions)
+        let cleanedDateSource = parsed.dateSource
+          .replace(/^the exact text that specified the date:\s*/i, '')
+          .replace(/^exact text:\s*/i, '')
+          .replace(/^date source:\s*/i, '')
+          .trim();
+        if (cleanedDateSource && cleanedDateSource !== parsed.dateSource) {
+          console.log('Cleaned dateSource echo:', parsed.dateSource, '→', cleanedDateSource);
+          parsed.dateSource = cleanedDateSource;
+        }
+
         const dateSourceLower = parsed.dateSource.toLowerCase();
         const isTemplate = dateSourceLower === 'event title' || dateSourceLower.includes('yyyy');
         const sourceInEmail = emailText.includes(dateSourceLower.substring(0, 15)) ||
@@ -229,6 +250,15 @@ Important:
       if (parsed.endDate && !parsed.date) {
         console.log('Removing orphaned endDate:', parsed.endDate);
         delete parsed.endDate;
+      }
+
+      // Fallback: if LLM said isMeeting but didn't output date in YYYY-MM-DD, parse from dateSource
+      if (parsed.isMeeting && !parsed.date && parsed.dateSource) {
+        const fallback = extractDateFromText(parsed.dateSource, email.parsedDate || email.dateText);
+        if (fallback) {
+          console.log('Parsed date from dateSource fallback:', parsed.dateSource, '→', fallback.dateStr);
+          parsed.date = fallback.dateStr;
+        }
       }
 
       // Second pass: verify extracted dates against source text
@@ -898,6 +928,16 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
           if (meetingInfo?.confidence === 'low') {
             meetingInfo = null; // Skip low confidence matches
           }
+          // If LLM identified a meeting but couldn't extract a valid date,
+          // fall back to regex date parsing from the email text
+          if (meetingInfo?.isMeeting && !meetingInfo.date) {
+            const emailText = `${email.subject} ${email.snippet || ''}`;
+            const parsed = extractDateFromText(emailText, email.parsedDate || email.dateText);
+            if (parsed) {
+              console.log('Regex date fallback for LLM meeting:', email.subject, '→', parsed.dateStr);
+              meetingInfo.date = parsed.dateStr;
+            }
+          }
         }
 
         // Skip obvious newsletters/marketing emails
@@ -1176,33 +1216,45 @@ function extractDateFromText(text: string, emailDate?: string): { dateStr: strin
     nov: 10, november: 10, dec: 11, december: 11
   };
 
-  // Try "Month Day" pattern (Feb 2, January 15)
-  const monthDayMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b/i);
-  if (monthDayMatch) {
-    const month = months[monthDayMatch[1].toLowerCase().substring(0, 3)];
-    const day = parseInt(monthDayMatch[2]);
+  // Helper to resolve 2-digit or 4-digit year
+  function resolveYear(yearStr: string | undefined): number | null {
+    if (!yearStr) return null;
+    let y = parseInt(yearStr);
+    if (y < 100) y += 2000; // "26" → 2026
+    return y;
+  }
+
+  // Try "Day Month [Year]" pattern first (3rd February 2026, 2 Feb, 15 January)
+  // This runs before Month Day to correctly parse "3rd February 26" (day=3, not day=26)
+  const dayMonthMatch = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s+(\d{2,4}))?\b/i);
+  if (dayMonthMatch) {
+    const day = parseInt(dayMonthMatch[1]);
+    const month = months[dayMonthMatch[2].toLowerCase().substring(0, 3)];
     if (month !== undefined && day >= 1 && day <= 31) {
-      let year = currentYear;
-      // If the date has passed this year, assume next year
-      const testDate = new Date(year, month, day);
-      if (testDate < baseDate) {
-        year++;
+      let year = resolveYear(dayMonthMatch[3]) || currentYear;
+      if (!dayMonthMatch[3]) {
+        const testDate = new Date(year, month, day);
+        if (testDate < baseDate) {
+          year++;
+        }
       }
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       return { dateStr };
     }
   }
 
-  // Try "Day Month" pattern (2 Feb, 15 January)
-  const dayMonthMatch = text.match(/\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\b/i);
-  if (dayMonthMatch) {
-    const day = parseInt(dayMonthMatch[1]);
-    const month = months[dayMonthMatch[2].toLowerCase().substring(0, 3)];
+  // Try "Month Day [Year]" pattern (Feb 2, January 15, February 3rd 2026)
+  const monthDayMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?\b/i);
+  if (monthDayMatch) {
+    const month = months[monthDayMatch[1].toLowerCase().substring(0, 3)];
+    const day = parseInt(monthDayMatch[2]);
     if (month !== undefined && day >= 1 && day <= 31) {
-      let year = currentYear;
-      const testDate = new Date(year, month, day);
-      if (testDate < baseDate) {
-        year++;
+      let year = resolveYear(monthDayMatch[3]) || currentYear;
+      if (!monthDayMatch[3]) {
+        const testDate = new Date(year, month, day);
+        if (testDate < baseDate) {
+          year++;
+        }
       }
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       return { dateStr };
