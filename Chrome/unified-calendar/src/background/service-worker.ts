@@ -130,158 +130,138 @@ Respond with JSON only:
   return null;
 }
 
+/**
+ * Heuristic meeting classifier — fast, no LLM needed.
+ * Checks for forwarded calendar invites, meeting keywords, date+time patterns, etc.
+ * Returns a MeetingAnalysis if it looks like a meeting, null otherwise.
+ */
+function classifyEmailHeuristic(email: Email): MeetingAnalysis | null {
+  const subject = email.subject || '';
+  const subjectLower = subject.toLowerCase();
+  const snippet = (email.snippet || '').toLowerCase();
+  const from = (email.from || '').toLowerCase();
+  const combined = `${subjectLower} ${snippet}`;
+
+  // Strong meeting signals (high confidence)
+  const strongSignals = [
+    /\b(mdt|mdts)\b/i,                          // MDT meetings
+    /\bfw:\s/i,                                   // Forwarded (often calendar invites)
+    /\binvit(e|ation)\b/i,                        // Invitation
+    /\bcalendar\b/i,                              // Calendar reference
+    /\bmeeting\b/i,                               // Meeting
+    /\bappointment\b/i,                           // Appointment
+    /\bcatch[\s-]?up\b/i,                         // Catch up
+    /\bstandup\b/i,                               // Standup
+    /\b(zoom|teams|webex|google meet)\b/i,        // Video call platforms
+    /\bconference\b/i,                            // Conference
+    /\bworkshop\b/i,                              // Workshop
+    /\bseminar\b/i,                               // Seminar
+    /\bclinic\b/i,                                // Clinic
+    /\bsurgery\b/i,                               // Surgery (medical context)
+    /\bteaching\b/i,                              // Teaching session
+    /\bquality meeting\b/i,                       // Quality meeting
+    /\bcheck[\s-]?in\b/i,                         // Check-in
+    /\bdphil\b/i,                                 // DPhil meeting
+  ];
+
+  // Time patterns in subject (strong signal when combined with other keywords)
+  const hasTimeInSubject = /\b\d{1,2}[:.]\d{2}\s*(am|pm)?\b/i.test(subject) ||
+                           /\b\d{1,2}\s*(am|pm)\b/i.test(subject);
+
+  // Date patterns in subject
+  const hasDateInSubject = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i.test(subject) ||
+                           /\b\d{1,2}(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(subject) ||
+                           /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(subject);
+
+  let score = 0;
+  const matchedSignals: string[] = [];
+
+  for (const pattern of strongSignals) {
+    if (pattern.test(subject)) {
+      score += 3;
+      matchedSignals.push(pattern.source);
+    } else if (pattern.test(snippet)) {
+      score += 1;
+    }
+  }
+
+  // Time in subject is a moderate signal
+  if (hasTimeInSubject) {
+    score += 2;
+    matchedSignals.push('time-in-subject');
+  }
+
+  // Date in subject is a weak signal on its own
+  if (hasDateInSubject) {
+    score += 1;
+    matchedSignals.push('date-in-subject');
+  }
+
+  // "with <person>" pattern (e.g., "Lunch with Sarah")
+  if (/\bwith\s+[A-Z][a-z]+/i.test(subject)) {
+    score += 2;
+    matchedSignals.push('with-person');
+  }
+
+  // Known personal contacts (not noreply/automated)
+  const isPersonalSender = !from.includes('noreply') &&
+                           !from.includes('no-reply') &&
+                           !from.includes('digest') &&
+                           !from.includes('newsletter') &&
+                           !from.includes('notification') &&
+                           !from.includes('alert');
+
+  if (!isPersonalSender) {
+    score -= 3; // Penalize automated senders
+  }
+
+  // Threshold: need score >= 3 to classify as meeting
+  if (score >= 3) {
+    console.log('Heuristic classified as meeting:', subject, `(score=${score}, signals=${matchedSignals.join(',')})`);
+    return {
+      isMeeting: true,
+      title: subject,
+      confidence: score >= 5 ? 'high' : 'medium'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * LLM-based analysis — only used as fallback for ambiguous emails
+ */
 async function analyzeEmailWithLLM(email: Email): Promise<MeetingAnalysis | null> {
   if (!llmReady || !llmEngine) {
     return null;
   }
 
-  const prompt = `Analyze this email for meeting/appointment/event scheduling content.
-
-From: ${email.from || 'unknown'}
-Date: ${email.dateText || email.parsedDate || 'unknown'}
-Subject: ${email.subject}
-Snippet: ${email.snippet || ''}
-
-If this email discusses a specific meeting, appointment, or scheduled event, respond with JSON:
-{
-  "isMeeting": true,
-  "title": "event title",
-  "date": "YYYY-MM-DD",
-  "dateSource": "the exact text that specified the date",
-  "endDate": "YYYY-MM-DD",
-  "time": "HH:MM",
-  "timeSource": "the exact text that specified the time",
-  "duration": 60,
-  "confidence": "high|medium|low"
-}
-
-If NOT about a specific scheduled event, respond with:
-{"isMeeting": false}
-
-Important:
-- Only mark as meeting if there's a SPECIFIC date mentioned. You MUST provide "dateSource" with the exact quote from the email.
-- PREFER clear date formats in the snippet/body over ambiguous ones in the subject
-- For multi-day events (e.g., "January 8th/11th" means 8th to 11th), set date to start and endDate to end
-- Date ranges like "8/11" or "8th/11th" mean from the 8th TO the 11th, not a single date
-- For single-day events, omit endDate or set it same as date
-- CRITICAL: Only include "time" if there's an explicit time in the text. You MUST provide "timeSource" with the exact quote. If you can't quote a time, omit both "time" and "timeSource".
-- Interpret relative dates (e.g., "next Wednesday") relative to the email date
-- Generic mentions of "let's meet sometime" without a specific time are NOT meetings
-- Bookings, reservations, scheduled calls, appointments, deliveries ARE events
-- Respond with JSON only, no other text`;
+  const prompt = `Is this email about a scheduled meeting/event? Subject: "${email.subject}" Snippet: "${(email.snippet || '').substring(0, 80)}"
+Reply ONLY: YES or NO`;
 
   try {
     const response = await llmEngine.chat.completions.create({
       messages: [
-        { role: 'system', content: 'You are a meeting detection assistant. Output JSON only.' },
+        { role: 'system', content: 'Answer YES or NO only.' },
+        { role: 'user', content: 'Is this email about a scheduled meeting/event? Subject: "Team standup tomorrow 10am" Snippet: "Daily standup"\nReply ONLY: YES or NO' },
+        { role: 'assistant', content: 'YES' },
+        { role: 'user', content: 'Is this email about a scheduled meeting/event? Subject: "Your weekly digest" Snippet: "Top stories this week"\nReply ONLY: YES or NO' },
+        { role: 'assistant', content: 'NO' },
+        { role: 'user', content: 'Is this email about a scheduled meeting/event? Subject: "Your order shipped" Snippet: "Track your package"\nReply ONLY: YES or NO' },
+        { role: 'assistant', content: 'NO' },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.1,
-      max_tokens: 200
+      temperature: 0.0,
+      max_tokens: 5
     });
 
-    const result = response.choices[0]?.message?.content || '';
+    const result = (response.choices[0]?.message?.content || '').trim().toUpperCase();
+    console.log('LLM YES/NO for:', email.subject, '→', result);
 
-    // Parse JSON from response
-    let jsonStr = result;
-    const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) jsonStr = jsonMatch[1];
-
-    try {
-      const parsed = JSON.parse(jsonStr.trim());
-
-      // Validate sources - if they don't exist in the email, LLM is hallucinating
-      const emailText = `${email.subject} ${email.snippet}`.toLowerCase();
-
-      // Validate timeSource - must contain actual time pattern and exist in email
-      if (parsed.timeSource) {
-        // Strip prompt echo patterns from timeSource
-        let cleanedTimeSource = parsed.timeSource
-          .replace(/^the exact text that specified the time:\s*/i, '')
-          .replace(/^exact text:\s*/i, '')
-          .replace(/^time source:\s*/i, '')
-          .trim();
-        if (cleanedTimeSource && cleanedTimeSource !== parsed.timeSource) {
-          console.log('Cleaned timeSource echo:', parsed.timeSource, '→', cleanedTimeSource);
-          parsed.timeSource = cleanedTimeSource;
-        }
-        const timeSourceLower = parsed.timeSource.toLowerCase();
-        const hasTimePattern = /\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)|at\s+\d{1,2}/.test(timeSourceLower);
-        const sourceInEmail = emailText.includes(timeSourceLower.substring(0, 20));
-        if (!hasTimePattern || !sourceInEmail || timeSourceLower === 'hh:mm') {
-          console.log('Removing hallucinated time:', parsed.time, 'source:', parsed.timeSource);
-          delete parsed.time;
-          delete parsed.timeSource;
-          delete parsed.duration;
-        }
-      }
-      // Remove time without valid source
-      if (parsed.time && !parsed.timeSource) {
-        delete parsed.time;
-        delete parsed.duration;
-      }
-
-      // Validate dateSource - must exist in email, not be template text
-      if (parsed.dateSource) {
-        // Strip prompt echo patterns from dateSource (LLM sometimes echoes instructions)
-        let cleanedDateSource = parsed.dateSource
-          .replace(/^the exact text that specified the date:\s*/i, '')
-          .replace(/^exact text:\s*/i, '')
-          .replace(/^date source:\s*/i, '')
-          .trim();
-        if (cleanedDateSource && cleanedDateSource !== parsed.dateSource) {
-          console.log('Cleaned dateSource echo:', parsed.dateSource, '→', cleanedDateSource);
-          parsed.dateSource = cleanedDateSource;
-        }
-
-        const dateSourceLower = parsed.dateSource.toLowerCase();
-        const isTemplate = dateSourceLower === 'event title' || dateSourceLower.includes('yyyy');
-        const sourceInEmail = emailText.includes(dateSourceLower.substring(0, 15)) ||
-                              email.snippet?.toLowerCase().includes(dateSourceLower.substring(0, 15));
-        if (isTemplate || (!sourceInEmail && dateSourceLower.length < 50)) {
-          console.log('Removing hallucinated date:', parsed.date, 'source:', parsed.dateSource);
-          delete parsed.date;
-          delete parsed.dateSource;
-          delete parsed.endDate;
-        }
-      }
-
-      // Remove orphaned endDate if no date
-      if (parsed.endDate && !parsed.date) {
-        console.log('Removing orphaned endDate:', parsed.endDate);
-        delete parsed.endDate;
-      }
-
-      // Fallback: if LLM said isMeeting but didn't output date in YYYY-MM-DD, parse from dateSource
-      if (parsed.isMeeting && !parsed.date && parsed.dateSource) {
-        const fallback = extractDateFromText(parsed.dateSource, email.parsedDate || email.dateText);
-        if (fallback) {
-          console.log('Parsed date from dateSource fallback:', parsed.dateSource, '→', fallback.dateStr);
-          parsed.date = fallback.dateStr;
-        }
-      }
-
-      // Second pass: verify extracted dates against source text
-      if (parsed.date && parsed.dateSource && parsed.isMeeting) {
-        const verified = await verifyExtraction(parsed);
-        if (verified) {
-          Object.assign(parsed, verified);
-        }
-      }
-
-      console.log('LLM analysis for:', email.subject, '→', JSON.stringify(parsed));
-      return parsed;
-    } catch (e) {
-      // Try to extract JSON object from the text
-      const objMatch = result.match(/\{[\s\S]*\}/);
-      if (objMatch) {
-        const parsed = JSON.parse(objMatch[0]);
-        console.log('LLM analysis for:', email.subject, '→', JSON.stringify(parsed));
-        return parsed;
-      }
-      console.warn('Failed to parse LLM response for:', email.subject, '- Raw:', result);
-      return null;
+    if (result.startsWith('YES')) {
+      return { isMeeting: true, title: email.subject, confidence: 'medium' };
     }
+    return null;
   } catch (error: any) {
     console.error('LLM analysis error:', error.message);
     return null;
@@ -341,11 +321,10 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
       return { ready: llmReady, initializing: llmInitializing };
 
     case 'TEST_LLM':
-      // Test LLM on a specific email
-      if (!llmReady) {
-        return { error: 'LLM not loaded' };
-      }
-      const testResult = await analyzeEmailWithLLM(message.email);
+      // Test heuristic + LLM on a specific email
+      const heuristicResult = classifyEmailHeuristic(message.email);
+      const llmResult = llmReady ? await analyzeEmailWithLLM(message.email) : null;
+      const testResult = heuristicResult || llmResult;
       return { result: testResult };
 
     case 'OPEN_CALENDAR_VIEW':
@@ -917,31 +896,9 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
         currentScan!.progress.currentItem = email.subject;
         broadcastScanStatus();
 
-        // Try LLM analysis first, fall back to keyword matching
-        let meetingInfo: MeetingAnalysis | null = null;
-
-        if (llmReady) {
-          meetingInfo = await analyzeEmailWithLLM(email);
-          if (meetingInfo && !meetingInfo.isMeeting) {
-            meetingInfo = null;
-          }
-          if (meetingInfo?.confidence === 'low') {
-            meetingInfo = null; // Skip low confidence matches
-          }
-          // If LLM identified a meeting but couldn't extract a valid date,
-          // fall back to regex date parsing from the email text
-          if (meetingInfo?.isMeeting && !meetingInfo.date) {
-            const emailText = `${email.subject} ${email.snippet || ''}`;
-            const parsed = extractDateFromText(emailText, email.parsedDate || email.dateText);
-            if (parsed) {
-              console.log('Regex date fallback for LLM meeting:', email.subject, '→', parsed.dateStr);
-              meetingInfo.date = parsed.dateStr;
-            }
-          }
-        }
-
-        // Skip obvious newsletters/marketing emails
+        // Skip obvious newsletters/marketing emails BEFORE LLM (saves ~30s per email)
         const fromLower = (email.from || '').toLowerCase();
+        const subjectLower = email.subject.toLowerCase();
         const isNewsletter = fromLower.includes('noreply') ||
                             fromLower.includes('no-reply') ||
                             fromLower.includes('newsletter') ||
@@ -958,32 +915,54 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
                             fromLower.includes('linkedin') ||
                             fromLower.includes('.com') && !fromLower.includes('gmail.com') && !fromLower.includes('outlook.com');
 
-        if (isNewsletter) {
-          meetingInfo = null; // Skip newsletters
+        // Also skip common non-meeting subjects
+        const isSpamSubject = subjectLower.includes('unsubscribe') ||
+                              subjectLower.includes('now available') ||
+                              subjectLower.includes('order confirm') ||
+                              subjectLower.includes('shipping') ||
+                              subjectLower.includes('receipt') ||
+                              subjectLower.includes('password') ||
+                              subjectLower.includes('security alert') ||
+                              subjectLower.includes('verify your') ||
+                              subjectLower.includes('welcome to') ||
+                              subjectLower.includes('your account');
+
+        if (isNewsletter || isSpamSubject) {
+          console.log('Skipping non-meeting email:', email.subject);
+          await sleep(100);
+          continue;
         }
 
-        // Keyword fallback ONLY when LLM is not available (too many false positives otherwise)
-        if (!meetingInfo && !llmReady) {
-          const stored = await chrome.storage.local.get('meetingKeywords');
-          const meetingKeywords = stored.meetingKeywords || ['meet', 'call', 'schedule', 'available', 'calendar', 'appointment', 'invite', 'zoom', 'teams', 'webex'];
-          const hasKeyword = meetingKeywords.some((kw: string) =>
-            email.subject.toLowerCase().includes(kw) ||
-            email.snippet.toLowerCase().includes(kw)
-          );
-          if (hasKeyword) {
-            // Try to extract a date from subject or snippet
-            const extractedDate = extractDateFromText(email.subject, email.parsedDate)
-                               || extractDateFromText(email.snippet || '', email.parsedDate);
-            if (extractedDate) {
-              meetingInfo = { isMeeting: true, title: email.subject, date: extractedDate.dateStr, confidence: 'medium' };
-            } else {
-              // Use email date as the event date (best guess)
-              const emailDate = email.parsedDate ? new Date(email.parsedDate) : null;
-              if (emailDate && !isNaN(emailDate.getTime())) {
-                const y = emailDate.getFullYear(), m = emailDate.getMonth() + 1, d = emailDate.getDate();
-                meetingInfo = { isMeeting: true, title: email.subject, date: `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`, confidence: 'low' };
-              }
+        // Heuristic classification first (instant), LLM fallback for ambiguous
+        let meetingInfo: MeetingAnalysis | null = null;
+
+        meetingInfo = classifyEmailHeuristic(email);
+
+        // Extract date and time with regex for any classified meeting
+        if (meetingInfo?.isMeeting && !meetingInfo.date) {
+          const emailText = `${email.subject} ${email.snippet || ''}`;
+          const parsed = extractDateFromText(emailText, email.parsedDate || email.dateText);
+          if (parsed) {
+            console.log('Regex date extraction:', email.subject, '→', parsed.dateStr);
+            meetingInfo.date = parsed.dateStr;
+          }
+          // Extract time from email text (e.g., "at 2pm", "10:30", "8:30am")
+          const timeMatch = emailText.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
+                            emailText.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+          if (timeMatch) {
+            let hour = parseInt(timeMatch[1]);
+            const minute = timeMatch[2]?.match(/^\d+$/) ? parseInt(timeMatch[2]) : 0;
+            const ampm = (timeMatch[3] || timeMatch[2] || '').toLowerCase();
+            if (ampm === 'pm' && hour < 12) hour += 12;
+            if (ampm === 'am' && hour === 12) hour = 0;
+            if (hour >= 0 && hour <= 23 && minute % 5 === 0) {
+              meetingInfo.time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+              console.log('Regex time extraction:', email.subject, '→', meetingInfo.time);
             }
+          }
+          // No date extracted = can't place on calendar, discard
+          if (!meetingInfo.date) {
+            meetingInfo = null;
           }
         }
 
