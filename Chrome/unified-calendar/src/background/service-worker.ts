@@ -63,7 +63,7 @@ async function initLLM(): Promise<{ ready?: boolean; initializing?: boolean; err
   try {
     console.log('Initializing WebLLM...');
 
-    llmEngine = await CreateMLCEngine('Llama-3.2-1B-Instruct-q4f16_1-MLC', {
+    llmEngine = await CreateMLCEngine('Phi-3.5-mini-instruct-q4f16_1-MLC', {
       initProgressCallback: (progress) => {
         // Broadcast progress to popup
         chrome.runtime.sendMessage({
@@ -499,7 +499,8 @@ async function scanCalendar(mailbox: any) {
     // Scrape events from current week AND next week to cover rolling 7 days
     const allEvents: any[] = [];
 
-    // Scrape current week
+    // Scrape current week - try content script first, then direct injection
+    let scraped = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await chrome.tabs.sendMessage(tab.id!, {
@@ -508,17 +509,44 @@ async function scanCalendar(mailbox: any) {
         console.log(`Calendar scrape (this week) attempt ${attempt + 1}: ${response?.count || 0} events`);
         if (response?.events) {
           allEvents.push(...response.events);
+          scraped = true;
           break;
         }
       } catch (e: any) {
         console.log(`Calendar scrape attempt ${attempt + 1} failed:`, e.message);
+        if (e.message.includes('Receiving end does not exist')) {
+          console.log('Injecting calendar scraper directly...');
+          try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: tab.id! },
+              func: scrapeGoogleCalendarDirect
+            });
+            const response = results[0]?.result;
+            console.log('Direct calendar injection found', response?.count || 0, 'events');
+            if (response?.events) {
+              allEvents.push(...response.events);
+              scraped = true;
+              break;
+            }
+          } catch (injectErr: any) {
+            console.log('Failed to inject calendar scraper:', injectErr.message);
+          }
+        }
       }
       await sleep(2000);
     }
 
     // Navigate to next week and scrape
     try {
-      await chrome.tabs.sendMessage(tab.id!, { type: 'NAVIGATE_NEXT_WEEK' });
+      // Try content script navigation first, fall back to direct injection
+      try {
+        await chrome.tabs.sendMessage(tab.id!, { type: 'NAVIGATE_NEXT_WEEK' });
+      } catch (e) {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          func: navigateGoogleCalendarNextWeek
+        });
+      }
       await sleep(3000); // Wait for calendar to update
 
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -533,6 +561,21 @@ async function scanCalendar(mailbox: any) {
           }
         } catch (e: any) {
           console.log(`Next week scrape attempt ${attempt + 1} failed:`, e.message);
+          if (e.message.includes('Receiving end does not exist')) {
+            try {
+              const results = await chrome.scripting.executeScript({
+                target: { tabId: tab.id! },
+                func: scrapeGoogleCalendarDirect
+              });
+              const response = results[0]?.result;
+              if (response?.events) {
+                allEvents.push(...response.events);
+                break;
+              }
+            } catch (injectErr: any) {
+              console.log('Failed to inject calendar scraper:', injectErr.message);
+            }
+          }
         }
         await sleep(2000);
       }
@@ -589,7 +632,7 @@ async function scanCalendar(mailbox: any) {
     await storage.addScanLog({
       mailboxId: mailbox.id,
       action: 'calendar_scraped',
-      details: { entriesFound: response?.count || 0 }
+      details: { entriesFound: uniqueEvents.length }
     });
 
   } catch (error: any) {
@@ -888,7 +931,19 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
             email.snippet.toLowerCase().includes(kw)
           );
           if (hasKeyword) {
-            meetingInfo = { isMeeting: true, title: email.subject, confidence: 'low' };
+            // Try to extract a date from subject or snippet
+            const extractedDate = extractDateFromText(email.subject, email.parsedDate)
+                               || extractDateFromText(email.snippet || '', email.parsedDate);
+            if (extractedDate) {
+              meetingInfo = { isMeeting: true, title: email.subject, date: extractedDate.dateStr, confidence: 'medium' };
+            } else {
+              // Use email date as the event date (best guess)
+              const emailDate = email.parsedDate ? new Date(email.parsedDate) : null;
+              if (emailDate && !isNaN(emailDate.getTime())) {
+                const y = emailDate.getFullYear(), m = emailDate.getMonth() + 1, d = emailDate.getDate();
+                meetingInfo = { isMeeting: true, title: email.subject, date: `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`, confidence: 'low' };
+              }
+            }
           }
         }
 
@@ -1497,6 +1552,128 @@ function scrapeGmailEmailsDirect(lookbackDays: number) {
     cutoffDate: cutoffDate.toISOString(),
     emails: emails.slice(0, 50)
   };
+}
+
+// ============ Google Calendar Injected Functions ============
+
+function scrapeGoogleCalendarDirect() {
+  const events: any[] = [];
+  const processedLabels = new Set();
+
+  const months: { [key: string]: number } = {
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+    july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
+  };
+
+  function findDatePart(parts: string[]) {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i].trim();
+      if (p.match(/\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/)) {
+        return p;
+      }
+    }
+    return '';
+  }
+
+  function parseCalDate(dateStr: string) {
+    const multiMatch = dateStr.match(/^(\d{1,2})\s+(\w+)\s+(?:–|to)\s+\d{1,2}\s+\w+\s+(\d{4})/);
+    if (multiMatch) return new Date(`${multiMatch[2]} ${multiMatch[1]}, ${multiMatch[3]}`);
+    const match = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
+    if (match) return new Date(`${match[2]} ${match[1]}, ${match[3]}`);
+    return null;
+  }
+
+  function setTime(date: Date, timeStr: string) {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    const result = new Date(date);
+    result.setHours(hours, minutes, 0, 0);
+    return result;
+  }
+
+  const skipPrefixes = ['Needs RSVP', 'Accepted', 'Declined', 'Tentative', 'No location', 'Location:', 'All day'];
+
+  const chips = document.querySelectorAll('[data-eventchip]');
+  for (const chip of chips) {
+    const text = chip.textContent?.trim();
+    if (!text || text === 'Add location') continue;
+
+    let label = text;
+    const yearMatch = text.match(/\d{4}/);
+    if (yearMatch) {
+      const yearEnd = text.indexOf(yearMatch[0]) + yearMatch[0].length;
+      label = text.substring(0, yearEnd);
+    }
+
+    if (processedLabels.has(label)) continue;
+
+    const parts = label.split(', ');
+    if (parts.length < 3) continue;
+
+    let startTime = null, endTime = null, isAllDay = false, title = '', location = '', status = '';
+    const dateStr = findDatePart(parts);
+
+    if (parts[0].trim() === 'All day') {
+      isAllDay = true;
+      const titleParts: string[] = [];
+      for (let i = 1; i < parts.length; i++) {
+        const p = parts[i].trim();
+        if (p === dateStr || (dateStr && p.match(/\d{4}/))) break;
+        if (skipPrefixes.some(sp => p.startsWith(sp))) continue;
+        titleParts.push(p);
+      }
+      title = titleParts.join(', ');
+      const eventDate = parseCalDate(dateStr);
+      if (eventDate) {
+        startTime = new Date(eventDate); startTime.setHours(0, 0, 0, 0);
+        endTime = new Date(eventDate); endTime.setHours(23, 59, 59, 999);
+      }
+    } else {
+      const timeMatch = parts[0].match(/^(\d{1,2}:\d{2})\s+to\s+(\d{1,2}:\d{2})$/);
+      if (!timeMatch || !dateStr) continue;
+      const eventDate = parseCalDate(dateStr);
+      if (!eventDate) continue;
+      startTime = setTime(eventDate, timeMatch[1]);
+      endTime = setTime(eventDate, timeMatch[2]);
+      const titleParts: string[] = [];
+      for (let i = 1; i < parts.length; i++) {
+        const p = parts[i].trim();
+        if (p === dateStr || (dateStr && p.match(/\d{4}/))) break;
+        if (skipPrefixes.some(sp => p.startsWith(sp))) continue;
+        titleParts.push(p);
+      }
+      title = titleParts.join(', ');
+    }
+
+    if (!title || !startTime) continue;
+
+    if (label.includes('Needs RSVP')) status = 'needs_rsvp';
+    else if (label.includes('Accepted')) status = 'accepted';
+    else if (label.includes('Declined')) status = 'declined';
+    else if (label.includes('Tentative')) status = 'tentative';
+
+    const locIdx = parts.findIndex(p => p.startsWith('Location:'));
+    if (locIdx !== -1) location = parts[locIdx].replace('Location: ', '');
+
+    processedLabels.add(label);
+    events.push({
+      title, startTime: startTime.toISOString(), endTime: endTime?.toISOString() || new Date(startTime.getTime() + 3600000).toISOString(),
+      isAllDay, location, rsvpStatus: status
+    });
+  }
+
+  console.log('Google Calendar direct scraper found', events.length, 'events');
+  return { events, count: events.length, url: window.location.href };
+}
+
+function navigateGoogleCalendarNextWeek() {
+  const nextButton = document.querySelector('[data-value="next"]') ||
+                     document.querySelector('button[aria-label*="Next"]') ||
+                     document.querySelector('button[aria-label*="Forward"]');
+  if (nextButton) {
+    (nextButton as HTMLElement).click();
+    return { success: true };
+  }
+  return { success: false, error: 'Next button not found' };
 }
 
 console.log('Unified Calendar: Service worker initialized');
