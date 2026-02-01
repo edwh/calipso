@@ -49,7 +49,7 @@
         "https://outlook.office.com/*",
         "https://outlook.office365.com/*"
       ],
-      "js": ["content/outlook-calendar-adapter.js"],
+      "js": ["content/outlook-calendar-adapter.js", "content/outlook-email-adapter.js"],
       "run_at": "document_idle"
     }
   ],

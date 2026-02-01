@@ -814,10 +814,207 @@ function hashString(str: string): string {
   return Math.abs(hash).toString(36);
 }
 
+async function scanOutlookEmails(mailbox: any, lookbackDays: number) {
+  currentScan!.phase = 'emails';
+  currentScan!.progress.currentItem = `Scanning Outlook emails: ${mailbox.name}`;
+  broadcastScanStatus();
+
+  // Clear old email-sourced entries for this mailbox before scanning
+  await storage.clearEntriesBySource(mailbox.id, 'email');
+
+  const email = mailbox.email || '';
+  let mailUrl = 'https://outlook.live.com/mail/';
+  if (email.includes('@') && !email.match(/@(outlook|hotmail|live|msn)\./i)) {
+    mailUrl = 'https://outlook.office.com/mail/';
+  }
+
+  try {
+    // Reuse existing Outlook mail tab if available
+    const existingTabs = await chrome.tabs.query({
+      url: ['https://outlook.live.com/mail/*', 'https://outlook.office.com/mail/*', 'https://outlook.office365.com/mail/*']
+    });
+
+    let tab: chrome.tabs.Tab;
+    let createdTab = false;
+
+    if (existingTabs.length > 0) {
+      tab = existingTabs[0];
+      console.log('Reusing existing Outlook mail tab:', tab.id);
+      await sleep(2000);
+    } else {
+      console.log('Opening Outlook mail URL:', mailUrl);
+      tab = await chrome.tabs.create({ url: mailUrl, active: false });
+      createdTab = true;
+      await waitForTabLoad(tab.id!);
+      await sleep(8000);
+    }
+
+    // Try to get emails from content script
+    let response: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await chrome.tabs.sendMessage(tab.id!, {
+          type: 'SCAN_OUTLOOK_EMAILS',
+          options: { lookbackDays }
+        });
+        console.log(`Outlook email attempt ${attempt + 1}: ${response?.emailCount || 0} emails found`);
+        if (response?.emails?.length > 0) break;
+      } catch (e: any) {
+        console.log(`Outlook email attempt ${attempt + 1} failed:`, e.message);
+      }
+      await sleep(3000);
+    }
+
+    console.log(`Outlook email scan found ${response?.emailCount || 0} emails within ${lookbackDays} days`);
+
+    if (response?.emails) {
+      currentScan!.progress.total = response.emails.length;
+      currentScan!.progress.current = 0;
+
+      for (let i = 0; i < response.emails.length; i++) {
+        if (scanAborted) break;
+
+        const emailItem: any = response.emails[i];
+        currentScan!.progress.current = i + 1;
+        currentScan!.progress.currentItem = emailItem.subject;
+        broadcastScanStatus();
+
+        // Same newsletter/spam filtering as Gmail
+        const fromLower = (emailItem.from || '').toLowerCase();
+        const subjectLower = emailItem.subject.toLowerCase();
+        const isNewsletter = fromLower.includes('noreply') ||
+                            fromLower.includes('no-reply') ||
+                            fromLower.includes('newsletter') ||
+                            fromLower.includes('marketing') ||
+                            fromLower.includes('info@') ||
+                            fromLower.includes('hello@') ||
+                            fromLower.includes('news@') ||
+                            fromLower.includes('updates@') ||
+                            fromLower.includes('notifications') ||
+                            fromLower.includes('@email.') ||
+                            fromLower.includes('@mail.') ||
+                            fromLower.includes('@e.') ||
+                            fromLower.includes('linkedin');
+
+        const isSpamSubject = subjectLower.includes('unsubscribe') ||
+                              subjectLower.includes('now available') ||
+                              subjectLower.includes('order confirm') ||
+                              subjectLower.includes('shipping') ||
+                              subjectLower.includes('receipt') ||
+                              subjectLower.includes('password') ||
+                              subjectLower.includes('security alert') ||
+                              subjectLower.includes('verify your') ||
+                              subjectLower.includes('welcome to') ||
+                              subjectLower.includes('your account');
+
+        if (isNewsletter || isSpamSubject) {
+          console.log('Skipping non-meeting Outlook email:', emailItem.subject);
+          await sleep(100);
+          continue;
+        }
+
+        // Heuristic classification
+        let meetingInfo = classifyEmailHeuristic(emailItem);
+
+        // Extract date/time
+        if (meetingInfo?.isMeeting && !meetingInfo.date) {
+          const emailText = `${emailItem.subject} ${emailItem.snippet || ''}`;
+          const parsed = extractDateFromText(emailText, emailItem.parsedDate || emailItem.dateText);
+          if (parsed) {
+            meetingInfo.date = parsed.dateStr;
+          }
+          const timeMatch = emailText.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
+                            emailText.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+          if (timeMatch) {
+            let hour = parseInt(timeMatch[1]);
+            const minute = timeMatch[2]?.match(/^\d+$/) ? parseInt(timeMatch[2]) : 0;
+            const ampm = (timeMatch[3] || timeMatch[2] || '').toLowerCase();
+            if (ampm === 'pm' && hour < 12) hour += 12;
+            if (ampm === 'am' && hour === 12) hour = 0;
+            if (hour >= 0 && hour <= 23 && minute % 5 === 0) {
+              meetingInfo.time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+            }
+          }
+          if (!meetingInfo.date) meetingInfo = null;
+        }
+
+        // Create entry if meeting detected with date
+        if (meetingInfo?.isMeeting && meetingInfo.date) {
+          let startTime: Date, endTime: Date;
+          let isAllDay = false;
+
+          if (meetingInfo.time) {
+            const [year, month, day] = meetingInfo.date.split('-').map(Number);
+            const [hour, minute] = meetingInfo.time.split(':').map(Number);
+            if (minute % 5 !== 0) continue;
+            startTime = new Date(year, month - 1, day, hour, minute);
+            const duration = meetingInfo.duration || 60;
+            endTime = new Date(startTime.getTime() + duration * 60 * 1000);
+          } else if (meetingInfo.endDate && meetingInfo.endDate !== meetingInfo.date) {
+            const [year, month, day] = meetingInfo.date.split('-').map(Number);
+            const [endYear, endMonth, endDay] = meetingInfo.endDate.split('-').map(Number);
+            startTime = new Date(year, month - 1, day, 0, 0);
+            endTime = new Date(endYear, endMonth - 1, endDay, 23, 59);
+            isAllDay = true;
+          } else {
+            const [year, month, day] = meetingInfo.date.split('-').map(Number);
+            startTime = new Date(year, month - 1, day, 9, 0);
+            endTime = new Date(year, month - 1, day, 10, 0);
+            isAllDay = true;
+          }
+
+          const title = meetingInfo.title || emailItem.subject;
+          if (title.toLowerCase() === 'event title' || title.includes('YYYY')) continue;
+
+          const tentativeEntry = {
+            id: `email-${mailbox.id}-${emailItem.id}`,
+            mailboxId: mailbox.id,
+            title: title,
+            startTime: startTime!.toISOString(),
+            endTime: endTime!.toISOString(),
+            isAllDay,
+            status: 'tentative',
+            source: {
+              type: 'email',
+              emailSubject: emailItem.subject,
+              emailSnippet: emailItem.snippet?.substring(0, 200) || '',
+              emailDate: emailItem.parsedDate || emailItem.dateText,
+              emailThreadId: emailItem.id,
+            },
+            conflicts: [] as string[]
+          };
+
+          await storage.saveEntry(tentativeEntry);
+          broadcastNewEntry(tentativeEntry);
+        }
+
+        await sleep(100);
+      }
+    }
+
+    if (createdTab) {
+      await chrome.tabs.remove(tab.id!);
+    }
+
+    await storage.addScanLog({
+      mailboxId: mailbox.id,
+      action: 'outlook_emails_scanned',
+      details: { emailsProcessed: currentScan!.progress.current }
+    });
+
+  } catch (error: any) {
+    console.error('Error scanning Outlook emails:', error);
+    await storage.addScanLog({
+      mailboxId: mailbox.id,
+      action: 'outlook_email_error',
+      details: { error: error.message }
+    });
+  }
+}
+
 async function scanEmails(mailbox: any, lookbackDays: number) {
-  // Skip email scanning for Outlook (not yet implemented)
   if (mailbox.provider === 'outlook') {
-    console.log('Skipping email scan for Outlook mailbox (not yet implemented)');
+    await scanOutlookEmails(mailbox, lookbackDays);
     return;
   }
 
