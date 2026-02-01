@@ -6,6 +6,7 @@
 
 import * as storage from '../lib/storage';
 import { CreateMLCEngine, MLCEngine } from '@mlc-ai/web-llm';
+import * as chrono from 'chrono-node';
 
 // Type definitions
 interface ScanState {
@@ -162,16 +163,27 @@ function classifyEmailHeuristic(email: Email): MeetingAnalysis | null {
     /\bquality meeting\b/i,                       // Quality meeting
     /\bcheck[\s-]?in\b/i,                         // Check-in
     /\bdphil\b/i,                                 // DPhil meeting
+    /\bdiscuss\b/i,                               // Discussion
+    /\bpresentation\b/i,                          // Presentation
+    /\breview\s+meeting\b/i,                      // Review meeting
+    /\bwebinar\b/i,                               // Webinar
   ];
 
-  // Time patterns in subject (strong signal when combined with other keywords)
+  // Time patterns in subject or snippet
   const hasTimeInSubject = /\b\d{1,2}[:.]\d{2}\s*(am|pm)?\b/i.test(subject) ||
                            /\b\d{1,2}\s*(am|pm)\b/i.test(subject);
+  const hasTimeInSnippet = !hasTimeInSubject && (
+                           /\b\d{1,2}[:.]\d{2}\s*(am|pm)?\b/i.test(snippet) ||
+                           /\b\d{1,2}\s*(am|pm)\b/i.test(snippet));
 
-  // Date patterns in subject
+  // Date patterns in subject or snippet
   const hasDateInSubject = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i.test(subject) ||
                            /\b\d{1,2}(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(subject) ||
                            /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(subject);
+  const hasDateInSnippet = !hasDateInSubject && (
+                           /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i.test(snippet) ||
+                           /\b\d{1,2}(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(snippet) ||
+                           /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(snippet));
 
   let score = 0;
   const matchedSignals: string[] = [];
@@ -185,16 +197,22 @@ function classifyEmailHeuristic(email: Email): MeetingAnalysis | null {
     }
   }
 
-  // Time in subject is a moderate signal
+  // Time in subject is a moderate signal; in snippet is weaker
   if (hasTimeInSubject) {
     score += 2;
     matchedSignals.push('time-in-subject');
+  } else if (hasTimeInSnippet) {
+    score += 1;
+    matchedSignals.push('time-in-snippet');
   }
 
-  // Date in subject is a weak signal on its own
+  // Date in subject is a weak signal; in snippet too
   if (hasDateInSubject) {
     score += 1;
     matchedSignals.push('date-in-subject');
+  } else if (hasDateInSnippet) {
+    score += 1;
+    matchedSignals.push('date-in-snippet');
   }
 
   // "with <person>" pattern (e.g., "Lunch with Sarah")
@@ -325,7 +343,10 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
       const heuristicResult = classifyEmailHeuristic(message.email);
       const llmResult = llmReady ? await analyzeEmailWithLLM(message.email) : null;
       const testResult = heuristicResult || llmResult;
-      return { result: testResult };
+      // Also test date extraction
+      const emailText = `${message.email.subject} ${message.email.snippet || ''}`;
+      const dateExtract = extractDateTimeFromText(emailText, message.email.parsedDate || message.email.dateText);
+      return { result: testResult, dateExtract };
 
     case 'OPEN_CALENDAR_VIEW':
       return openCalendarView();
@@ -916,24 +937,13 @@ async function scanOutlookEmails(mailbox: any, lookbackDays: number) {
         // Heuristic classification
         let meetingInfo = classifyEmailHeuristic(emailItem);
 
-        // Extract date/time
+        // Extract date/time using chrono-node
         if (meetingInfo?.isMeeting && !meetingInfo.date) {
           const emailText = `${emailItem.subject} ${emailItem.snippet || ''}`;
-          const parsed = extractDateFromText(emailText, emailItem.parsedDate || emailItem.dateText);
+          const parsed = extractDateTimeFromText(emailText, emailItem.parsedDate || emailItem.dateText);
           if (parsed) {
-            meetingInfo.date = parsed.dateStr;
-          }
-          const timeMatch = emailText.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
-                            emailText.match(/\b(\d{1,2})\s*(am|pm)\b/i);
-          if (timeMatch) {
-            let hour = parseInt(timeMatch[1]);
-            const minute = timeMatch[2]?.match(/^\d+$/) ? parseInt(timeMatch[2]) : 0;
-            const ampm = (timeMatch[3] || timeMatch[2] || '').toLowerCase();
-            if (ampm === 'pm' && hour < 12) hour += 12;
-            if (ampm === 'am' && hour === 12) hour = 0;
-            if (hour >= 0 && hour <= 23 && minute % 5 === 0) {
-              meetingInfo.time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-            }
+            meetingInfo.date = parsed.date;
+            if (parsed.time) meetingInfo.time = parsed.time;
           }
           if (!meetingInfo.date) meetingInfo = null;
         }
@@ -1141,54 +1151,28 @@ async function scanEmails(mailbox: any, lookbackDays: number) {
 
         meetingInfo = classifyEmailHeuristic(email);
 
-        // Extract date and time with regex for any classified meeting
+        // Extract date and time using chrono-node
         if (meetingInfo?.isMeeting && !meetingInfo.date) {
           const emailText = `${email.subject} ${email.snippet || ''}`;
-          const parsed = extractDateFromText(emailText, email.parsedDate || email.dateText);
+          const parsed = extractDateTimeFromText(emailText, email.parsedDate || email.dateText);
           if (parsed) {
-            console.log('Regex date extraction:', email.subject, '→', parsed.dateStr);
-            meetingInfo.date = parsed.dateStr;
+            meetingInfo.date = parsed.date;
+            if (parsed.time) meetingInfo.time = parsed.time;
           }
-          // Extract time from email text (e.g., "at 2pm", "10:30", "8:30am")
-          const timeMatch = emailText.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
-                            emailText.match(/\b(\d{1,2})\s*(am|pm)\b/i);
-          if (timeMatch) {
-            let hour = parseInt(timeMatch[1]);
-            const minute = timeMatch[2]?.match(/^\d+$/) ? parseInt(timeMatch[2]) : 0;
-            const ampm = (timeMatch[3] || timeMatch[2] || '').toLowerCase();
-            if (ampm === 'pm' && hour < 12) hour += 12;
-            if (ampm === 'am' && hour === 12) hour = 0;
-            if (hour >= 0 && hour <= 23 && minute % 5 === 0) {
-              meetingInfo.time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-              console.log('Regex time extraction:', email.subject, '→', meetingInfo.time);
-            }
-          }
-          // No date extracted = can't place on calendar, discard
-          if (!meetingInfo.date) {
-            meetingInfo = null;
-          }
+          if (!meetingInfo.date) meetingInfo = null;
         }
 
         // Self-email with date pattern detection (reminders to self)
         if (!meetingInfo) {
           const isSelfEmail = email.from?.toLowerCase().includes(mailbox.email.toLowerCase());
           if (isSelfEmail) {
-            // Look for date patterns in subject
-            const datePatterns = [
-              /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i,  // "Feb 2", "January 15"
-              /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b/i,  // "2 Feb", "15 January"
-              /\b\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?\b/,  // "2/15", "15-02-2026"
-              /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,  // Day names
-              /\b(tomorrow|next\s+week|this\s+week)\b/i  // Relative dates
-            ];
-            const hasDate = datePatterns.some(pattern => pattern.test(email.subject));
-            if (hasDate) {
-              // Extract the date from subject and try to parse it
-              const extractedDate = extractDateFromText(email.subject, email.parsedDate);
+            const extracted = extractDateTimeFromText(email.subject, email.parsedDate);
+            if (extracted) {
               meetingInfo = {
                 isMeeting: true,
                 title: email.subject,
-                date: extractedDate?.dateStr,
+                date: extracted.date,
+                time: extracted.time,
                 confidence: 'medium'
               };
             }
@@ -1386,64 +1370,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Extract date from text like "Feb 2", "on January 15", "next Monday"
-function extractDateFromText(text: string, emailDate?: string): { dateStr: string } | null {
-  const baseDate = emailDate ? new Date(emailDate) : new Date();
-  const currentYear = baseDate.getFullYear();
+// Extract date/time from natural language text using chrono-node
+function extractDateTimeFromText(text: string, emailDate?: string): { date: string; time?: string } | null {
+  const refDate = emailDate ? new Date(emailDate) : new Date();
+  const results = chrono.parse(text, refDate, { forwardDate: true });
+  if (!results.length) return null;
 
-  const months: { [key: string]: number } = {
-    jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
-    apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
-    aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9,
-    nov: 10, november: 10, dec: 11, december: 11
-  };
+  const parsed = results[0];
+  const startDate = parsed.start.date();
 
-  // Helper to resolve 2-digit or 4-digit year
-  function resolveYear(yearStr: string | undefined): number | null {
-    if (!yearStr) return null;
-    let y = parseInt(yearStr);
-    if (y < 100) y += 2000; // "26" → 2026
-    return y;
-  }
+  const dateStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
 
-  // Try "Day Month [Year]" pattern first (3rd February 2026, 2 Feb, 15 January)
-  // This runs before Month Day to correctly parse "3rd February 26" (day=3, not day=26)
-  const dayMonthMatch = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s+(\d{2,4}))?\b/i);
-  if (dayMonthMatch) {
-    const day = parseInt(dayMonthMatch[1]);
-    const month = months[dayMonthMatch[2].toLowerCase().substring(0, 3)];
-    if (month !== undefined && day >= 1 && day <= 31) {
-      let year = resolveYear(dayMonthMatch[3]) || currentYear;
-      if (!dayMonthMatch[3]) {
-        const testDate = new Date(year, month, day);
-        if (testDate < baseDate) {
-          year++;
-        }
-      }
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return { dateStr };
+  // Only include time if chrono explicitly found one (not just a date)
+  let time: string | undefined;
+  if (parsed.start.isCertain('hour')) {
+    const hour = parsed.start.get('hour') || 0;
+    const minute = parsed.start.get('minute') || 0;
+    if (minute % 5 === 0) {
+      time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
     }
   }
 
-  // Try "Month Day [Year]" pattern (Feb 2, January 15, February 3rd 2026)
-  const monthDayMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?\b/i);
-  if (monthDayMatch) {
-    const month = months[monthDayMatch[1].toLowerCase().substring(0, 3)];
-    const day = parseInt(monthDayMatch[2]);
-    if (month !== undefined && day >= 1 && day <= 31) {
-      let year = resolveYear(monthDayMatch[3]) || currentYear;
-      if (!monthDayMatch[3]) {
-        const testDate = new Date(year, month, day);
-        if (testDate < baseDate) {
-          year++;
-        }
-      }
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      return { dateStr };
-    }
-  }
-
-  return null;
+  return { date: dateStr, time };
 }
 
 function waitForTabLoad(tabId: number, timeout = 15000): Promise<void> {

@@ -12,6 +12,7 @@
     "@mlc-ai/web-llm": "^0.2.80",
     "@mlc-ai/web-runtime": "^0.23.0-dev1",
     "canvas": "^3.2.1",
+    "chrono-node": "^2.9.0",
     "idb": "^8.0.0"
   },
   "devDependencies": {

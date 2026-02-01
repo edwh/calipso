@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Unified Calendar",
+  "name": "Calipso Calendar",
   "version": "0.1.0",
   "description": "Unified calendar view across multiple Gmail accounts with privacy-safe meeting detection",
   "permissions": [
@@ -9,33 +9,46 @@
     "tabs",
     "activeTab",
     "notifications",
-    "downloads"
+    "downloads",
+    "scripting"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://calendar.google.com/*"
+    "https://calendar.google.com/*",
+    "https://outlook.live.com/*",
+    "https://outlook.office.com/*",
+    "https://outlook.office365.com/*"
   ],
   "background": {
-    "service_worker": "dist/service-worker.892c8520.js"
+    "service_worker": "dist/service-worker.99a9e6cf.js"
   },
   "action": {
-    "default_popup": "dist/popup.fe621eee.html",
+    "default_popup": "dist/popup.ea32d2d6.html",
     "default_icon": {
-      "16": "dist/icon16.699bb42f.png",
-      "32": "dist/icon32.46fd2050.png",
-      "48": "dist/icon48.d6f1e0ce.png",
-      "128": "dist/icon128.0ca2cfed.png"
+      "16": "dist/icon16.c078be44.png",
+      "32": "dist/icon32.db7d45ce.png",
+      "48": "dist/icon48.ca236e02.png",
+      "128": "dist/icon128.9528608a.png"
     }
   },
   "content_scripts": [
     {
       "matches": ["https://mail.google.com/*"],
-      "js": ["dist/gmail-adapter.02848457.js"],
+      "js": ["dist/gmail-adapter.5d27c2f9.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://calendar.google.com/*"],
-      "js": ["dist/calendar-setup.de6b7e09.js"],
+      "js": ["dist/calendar-setup.7b97be02.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://outlook.live.com/*",
+        "https://outlook.office.com/*",
+        "https://outlook.office365.com/*"
+      ],
+      "js": ["dist/outlook-calendar-adapter.91ea959f.js", "dist/outlook-email-adapter.e6a6ad50.js"],
       "run_at": "document_idle"
     }
   ],
@@ -46,10 +59,10 @@
     }
   ],
   "icons": {
-    "16": "dist/icon16.699bb42f.png",
-    "32": "dist/icon32.46fd2050.png",
-    "48": "dist/icon48.d6f1e0ce.png",
-    "128": "dist/icon128.0ca2cfed.png"
+    "16": "dist/icon16.c078be44.png",
+    "32": "dist/icon32.db7d45ce.png",
+    "48": "dist/icon48.ca236e02.png",
+    "128": "dist/icon128.9528608a.png"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; default-src 'self' data:; connect-src 'self' data: https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co https://raw.githubusercontent.com"
