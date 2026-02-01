@@ -9,6 +9,7 @@ let mailboxes = [];
 let weekStart = getWeekStart(new Date());
 let displayHourStart = 8;  // Default start hour (will be adjusted based on entries)
 let displayHourEnd = 18;   // Default end hour (will be adjusted based on entries)
+let hiddenEntries = new Set();  // IDs of hidden entries
 
 // DOM Elements
 const weekHeader = document.getElementById('week-header');
@@ -34,6 +35,7 @@ const btnLoadLlm = document.getElementById('btn-load-llm');
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
   await loadMailboxes();
+  await loadHiddenEntries();
   buildCalendarStructure();
   await loadEntries();
   checkScanStatus();
@@ -79,16 +81,33 @@ async function loadMailboxes() {
   updateLegend();
 }
 
+// Load hidden entries from storage
+async function loadHiddenEntries() {
+  const data = await chrome.storage.local.get('hiddenEntries');
+  hiddenEntries = new Set(data.hiddenEntries || []);
+}
+
+async function toggleHideEntry(entryId) {
+  if (hiddenEntries.has(entryId)) {
+    hiddenEntries.delete(entryId);
+  } else {
+    hiddenEntries.add(entryId);
+  }
+  await chrome.storage.local.set({ hiddenEntries: [...hiddenEntries] });
+  updateCurrentView();
+}
+
 // Load all entries for the year
 async function loadAllEntries() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const yearFromNow = new Date(today);
+  const pastStart = new Date();
+  pastStart.setDate(pastStart.getDate() - 30);
+  pastStart.setHours(0, 0, 0, 0);
+  const yearFromNow = new Date();
   yearFromNow.setFullYear(yearFromNow.getFullYear() + 1);
 
   allEntries = await chrome.runtime.sendMessage({
     type: 'GET_ENTRIES',
-    start: today.toISOString(),
+    start: pastStart.toISOString(),
     end: yearFromNow.toISOString()
   }) || [];
 
@@ -259,11 +278,13 @@ function countClashesForDay(dayEntries) {
   const counted = new Set();
 
   for (const entry of dayEntries) {
-    if (entry.conflicts?.length > 0 && !counted.has(entry.id)) {
+    if (hiddenEntries.has(entry.id)) continue;
+    // Filter out conflicts with hidden entries
+    const visibleConflicts = (entry.conflicts || []).filter(cid => !hiddenEntries.has(cid));
+    if (visibleConflicts.length > 0 && !counted.has(entry.id)) {
       clashCount++;
       counted.add(entry.id);
-      // Don't double-count the conflicting entries
-      entry.conflicts.forEach(cid => counted.add(cid));
+      visibleConflicts.forEach(cid => counted.add(cid));
     }
   }
 
@@ -373,15 +394,19 @@ function createEntryElement(entry, isNew = false) {
   const mailbox = mailboxes.find(m => m.id === entry.mailboxId);
   const color = mailbox?.color || '#4285f4';
 
+  const isHidden = hiddenEntries.has(entry.id);
+
   const el = document.createElement('div');
   el.className = `calendar-entry ${entry.status}`;
   if (isNew) el.classList.add('new');
-  if (entry.conflicts?.length > 0) el.classList.add('conflict');
+  if (entry.conflicts?.length > 0 && !isHidden) el.classList.add('conflict');
+  if (isHidden) el.classList.add('hidden-entry');
 
   el.style.top = `${top}px`;
   el.style.height = `${Math.max(height, 24)}px`;
-  el.style.borderColor = color;
+  el.style.borderColor = isHidden ? 'transparent' : color;
   el.style.color = '#202124';
+  if (isHidden) el.style.opacity = '0.25';
 
   el.innerHTML = `
     <div class="entry-title">${escapeHtml(entry.title)}</div>
@@ -570,8 +595,22 @@ function showEntryDetails(entry) {
     `;
   }
 
+  const isHidden = hiddenEntries.has(entry.id);
+  content += `
+    <div class="modal-row" style="margin-top: 16px; border-top: 1px solid #e8eaed; padding-top: 12px;">
+      <button id="btn-hide-entry" class="btn-small" style="width: 100%; padding: 8px; font-size: 13px;">
+        ${isHidden ? 'Show Event' : 'Hide Event'}
+      </button>
+    </div>
+  `;
+
   modalContent.innerHTML = content;
   modalOverlay.classList.add('active');
+
+  document.getElementById('btn-hide-entry').addEventListener('click', async () => {
+    await toggleHideEntry(entry.id);
+    modalOverlay.classList.remove('active');
+  });
 }
 
 // Check scan status

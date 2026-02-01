@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Unified Calendar",
+  "name": "Calipso Calendar",
   "version": "0.1.0",
   "description": "Unified calendar view across multiple Gmail accounts with privacy-safe meeting detection",
   "permissions": [

@@ -3,7 +3,7 @@
  * Runs on Google Calendar pages to extract calendar events
  */
 
-console.log('Unified Calendar: Calendar script loaded');
+console.log('Calipso: Calendar script loaded');
 
 // Message listener for commands from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

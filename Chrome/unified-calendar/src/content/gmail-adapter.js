@@ -3,7 +3,7 @@
  * Runs in the context of Gmail pages to extract email data
  */
 
-console.log('Unified Calendar: Gmail adapter loaded');
+console.log('Calipso: Gmail adapter loaded');
 
 // Track current account from URL
 function getAccountIndex() {

@@ -3,7 +3,7 @@
  * Runs on Outlook Web calendar pages to extract calendar events
  */
 
-console.log('Unified Calendar: Outlook calendar adapter loaded');
+console.log('Calipso: Outlook calendar adapter loaded');
 
 // Message listener for commands from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -668,21 +668,27 @@ async function scanOutlookCalendar(mailbox: any) {
       calUrl = 'https://outlook.office.com/calendar/';
     }
 
-    // Close any existing Outlook tabs and create fresh one
+    // Reuse existing Outlook calendar tab if available, otherwise create one
     const existingTabs = await chrome.tabs.query({
-      url: ['https://outlook.live.com/*', 'https://outlook.office.com/*', 'https://outlook.office365.com/*']
+      url: ['https://outlook.live.com/calendar/*', 'https://outlook.office.com/calendar/*', 'https://outlook.office365.com/calendar/*']
     });
 
-    for (const t of existingTabs) {
-      try { await chrome.tabs.remove(t.id!); } catch (e) {}
-    }
+    let tab: chrome.tabs.Tab;
+    let createdTab = false;
 
-    console.log('Opening Outlook calendar URL:', calUrl);
-    const tab = await chrome.tabs.create({ url: calUrl, active: false });
-    const createdTab = true;
-    await waitForTabLoad(tab.id!);
-    await sleep(6000); // Extra time for Outlook to fully load
-    console.log('Created Outlook calendar tab:', tab.id, 'URL:', tab.url);
+    if (existingTabs.length > 0) {
+      tab = existingTabs[0];
+      console.log('Reusing existing Outlook calendar tab:', tab.id, 'URL:', tab.url);
+      // Give it a moment in case it's still loading
+      await sleep(2000);
+    } else {
+      console.log('Opening Outlook calendar URL:', calUrl);
+      tab = await chrome.tabs.create({ url: calUrl, active: false });
+      createdTab = true;
+      await waitForTabLoad(tab.id!);
+      await sleep(8000); // Extra time for Outlook to fully render events
+      console.log('Created Outlook calendar tab:', tab.id, 'URL:', tab.url);
+    }
 
     // Scrape events by injecting scraper function directly (bypasses content script issues)
     const allEvents: any[] = [];
@@ -1299,7 +1305,7 @@ chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) =
       const remove = mb.createdAt > existing.createdAt ? existing : mb;
       await storage.deleteMailbox(remove.id);
       seen.set(mb.email, keep);
-      console.log(`Unified Calendar: Removed duplicate mailbox for ${mb.email}`);
+      console.log(`Calipso: Removed duplicate mailbox for ${mb.email}`);
     } else {
       seen.set(mb.email, mb);
     }
@@ -1707,4 +1713,4 @@ function navigateGoogleCalendarNextWeek() {
   return { success: false, error: 'Next button not found' };
 }
 
-console.log('Unified Calendar: Service worker initialized');
+console.log('Calipso: Service worker initialized');
