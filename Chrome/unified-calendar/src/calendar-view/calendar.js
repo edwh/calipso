@@ -119,10 +119,18 @@ function updateCurrentView() {
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekEnd.getDate() + 7);
 
-  // Filter entries for current week
-  entries = allEntries.filter(entry => {
+  // Filter entries for current week and deduplicate exact matches (same title, start, end)
+  const weekEntries = allEntries.filter(entry => {
     const entryStart = new Date(entry.startTime);
     return entryStart >= weekStart && entryStart < weekEnd;
+  });
+  // Deduplicate exact matches: same title, start time, end time
+  const seen = new Set();
+  entries = weekEntries.filter(entry => {
+    const key = `${entry.title.trim()}|${entry.startTime}|${entry.endTime}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 
   // Calculate hour range and rebuild calendar
@@ -178,10 +186,13 @@ function buildCalendarStructure() {
   for (let i = 0; i < 7; i++) {
     const date = new Date(weekStart);
     date.setDate(date.getDate() + i);
-    const isToday = isSameDay(date, new Date());
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isToday = isSameDay(date, today);
+    const isPast = date < today && !isToday;
 
     headerHtml += `
-      <div class="week-header-cell ${isToday ? 'today' : ''}" data-day-header="${i}">
+      <div class="week-header-cell ${isToday ? 'today' : ''} ${isPast ? 'past-day' : ''}" data-day-header="${i}">
         <div class="day-name">${getDayName(date)}</div>
         <div class="day-number">${date.getDate()}</div>
         <div class="clash-badge" data-day-clash="${i}" style="display:none" title="Click to view clashes"></div>
@@ -210,11 +221,16 @@ function buildCalendarStructure() {
   // Build day columns
   let gridHtml = '<div class="time-column" id="time-column">' + timeHtml + '</div>';
   for (let i = 0; i < 7; i++) {
+    const colDate = new Date(weekStart);
+    colDate.setDate(colDate.getDate() + i);
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    const colPast = colDate < todayMidnight && !isSameDay(colDate, todayMidnight);
     let hourLines = '';
     for (let h = 0; h < displayHours; h++) {
       hourLines += `<div class="hour-line" style="top: ${h * 48}px"></div>`;
     }
-    gridHtml += `<div class="day-column" data-day="${i}" style="min-height: ${displayHours * 48}px">${hourLines}</div>`;
+    gridHtml += `<div class="day-column ${colPast ? 'past-day' : ''}" data-day="${i}" style="min-height: ${displayHours * 48}px">${hourLines}</div>`;
   }
   weekGrid.innerHTML = gridHtml;
 }
